@@ -1,21 +1,19 @@
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Union
 from hydra.utils import instantiate
-from omegaconf import DictConfig
-
 import torch
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 import pytorch_lightning as pl
 
-from nuplan.planning.script.builders.lr_scheduler_builder import build_lr_scheduler
-from nuplan.planning.training.modeling.objectives.abstract_objective import aggregate_objectives
-from nuplan.planning.training.modeling.types import FeaturesType, ScenarioListType, TargetsType
+import torch.nn as nn
 
-from sledge.autoencoder.modeling.autoencoder_torch_module_wrapper import AutoencoderTorchModuleWrapper
-from sledge.autoencoder.modeling.matching.abstract_matching import AbstractMatching
-from sledge.autoencoder.modeling.metrics.abstract_custom_metric import AbstractCustomMetric
-from sledge.autoencoder.modeling.objectives.abstract_custom_objective import AbstractCustomObjective
+from nuplan.planning.script.builders.lr_scheduler_builder import build_lr_scheduler
+
+from .model import RVAEModel
+from .matching import RVAEHungarianMatching
+from .objective import RVAEHungarianObjective, KLObjective
+from .metric import KLMetric
 
 logger = logging.getLogger(__name__)
 
@@ -25,17 +23,7 @@ class AutoencoderWrapper(nn.Module):
     Custom lightning module that wraps the training/validation/testing procedure and handles the objective/metric computation.
     """
 
-    def __init__(
-        self,
-        model: AutoencoderTorchModuleWrapper,
-        objectives: List[AbstractCustomObjective],
-        metrics: Optional[List[AbstractCustomMetric]],
-        matchings: Optional[List[AbstractMatching]],
-        optimizer: Optional[DictConfig] = None,
-        lr_scheduler: Optional[DictConfig] = None,
-        warm_up_lr_scheduler: Optional[DictConfig] = None,
-        objective_aggregate_mode: str = "sum",
-    ) -> None:
+    def __init__(self, cfg):
         """
         Initialize lightning autoencoder wrapper.
         :param model: autoencoder torch module wrapper.
@@ -50,10 +38,11 @@ class AutoencoderWrapper(nn.Module):
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
 
-        self.model = model
-        self.objectives = objectives
-        self.metrics = metrics
-        self.matchings = matchings
+        self.model = RVAEModel(cfg)
+        self.matcher = RVAEHungarianMatching(cfg)
+        self.objectives = [RVAEHungarianObjective(cfg), KLObjective(cfg)]
+        self.metric = KLMetric()
+       
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.warm_up_lr_scheduler = warm_up_lr_scheduler
@@ -61,7 +50,7 @@ class AutoencoderWrapper(nn.Module):
 
         self.tgt_types = ['LANE', 'VEHICLE']
 
-    def _step(self, batch, prefix) -> torch.Tensor:
+    def forward(self, batch, prefix="train"):
         """
         Propagates the model forward and backwards and computes/logs losses and metrics.
 
@@ -71,21 +60,23 @@ class AutoencoderWrapper(nn.Module):
         :param prefix: prefix prepended at each artifact's name during logging
         :return: model's scalar loss
         """
-        features, targets, scenarios = batch
+        features, targets = batch
 
-        predictions = self.forward(features)
-        matchings = self._compute_matchings(predictions, targets)
-        objectives = self._compute_objectives(predictions, targets, matchings, scenarios)
-        metrics = self._compute_metrics(predictions, targets, matchings, scenarios)
-        loss = aggregate_objectives(objectives, agg_mode=self.objective_aggregate_mode)
+        predictions = self.model(features)                                                  # ((lane_vector, lane_mask), (vehicle_vector, vehicle_mask))
+        matchings = self._compute_matchings(predictions["vector"], targets)                 # {'LANE_matching': [(tensor, tensor)], 'VEHICLE_matching': [(tensor, tensor)]}
+        objectives = self._compute_objectives(predictions["vector"], targets, matchings)
+        metrics = self._compute_metrics(predictions["latent"], targets, matchings)
+        loss = torch.stack(list(objectives.values())).sum()
 
-        self._log_step(loss, objectives, metrics, prefix)
+        # self._log_step(loss, objectives, metrics, prefix)
 
-        return loss
+        logs = {f"total_loss": loss}
+        logs.update(objectives)
+        logs.update(metrics)
 
-    def _compute_objectives(
-        self, predictions: FeaturesType, targets: TargetsType, matchings: TargetsType, scenarios: ScenarioListType
-    ) -> Dict[str, torch.Tensor]:
+        return logs
+
+    def _compute_objectives(self, predictions, targets, matchings, tgt_type):
         """
         Computes a set of learning objectives used for supervision given the model's predictions and targets.
 
@@ -95,14 +86,33 @@ class AutoencoderWrapper(nn.Module):
         :param scenarios: list of scenario types (for adaptive weighting)
         :return: dictionary of objective names and values
         """
-        objectives_dict: Dict[str, torch.Tensor] = {}
-        for objective in self.objectives:
-            objectives_dict.update(objective.compute(predictions, targets, matchings, scenarios))
-        return objectives_dict
+        objectives_dict = {}
 
-    def _compute_metrics(
-        self, predictions: FeaturesType, targets: TargetsType, matchings: TargetsType, scenarios: ScenarioListType
-    ) -> Dict[str, torch.Tensor]:
+        for objective in self.objectives:
+
+            if isinstance(objective, KLObjective):
+                objectives_dict.update(objective.compute(predictions["latent"], targets, matchings))
+                continue
+
+            for tgt_type in self.tgt_types:
+                objectives_dict.update(objective.compute(predictions["vector"], targets, matchings, tgt_type))
+
+        return objectives_dict
+    
+    def _compute_matchings(self, predictions, targets):
+        """
+        Computes a the matchings (e.g. for hungarian loss) between prediction and targets.
+
+        :param predictions: dictionary of predicted dataclasses.
+        :param targets: dictionary of target dataclasses.
+        :return: dictionary of matching names and matching dataclasses
+        """
+        matchings_dict = {}
+        for tgt_type in self.tgt_types:
+            matchings_dict.update(self.matcher.compute(predictions, targets, tgt_type))
+        return matchings_dict
+
+    def _compute_metrics(self, predictions, targets, matchings):
         """
         Computes a set of metrics used for logging.
 
@@ -112,93 +122,9 @@ class AutoencoderWrapper(nn.Module):
         :param scenarios: list of scenario types (for adaptive weighting)
         :return: dictionary of metrics names and values
         """
-        metrics_dict: Dict[str, torch.Tensor] = {}
-        if self.metrics:
-            for metric in self.metrics:
-                metrics_dict.update(metric.compute(predictions, targets, matchings, scenarios))
+        metrics_dict = {}
+        metrics_dict.update(self.metric.compute(predictions, targets, matchings))
         return metrics_dict
-
-    def _compute_matchings(self, predictions: FeaturesType, targets: TargetsType) -> FeaturesType:
-        """
-        Computes a the matchings (e.g. for hungarian loss) between prediction and targets.
-
-        :param predictions: dictionary of predicted dataclasses.
-        :param targets: dictionary of target dataclasses.
-        :return: dictionary of matching names and matching dataclasses
-        """
-        matchings_dict: Dict[str, torch.Tensor] = {}
-        if self.matchings:
-            for tgt_type in self.tgt_types:
-                for matching in self.matchings:
-                    matchings_dict.update(matching.compute(predictions, targets, tgt_type))
-        return matchings_dict
-
-    def _log_step(
-        self,
-        loss: torch.Tensor,
-        objectives: Dict[str, torch.Tensor],
-        metrics: Dict[str, torch.Tensor],
-        prefix: str,
-        loss_name: str = "loss",
-    ) -> None:
-        """
-        Logs the artifacts from a training/validation/test step.
-
-        :param loss: scalar loss value
-        :type objectives: [type]
-        :param metrics: dictionary of metrics names and values
-        :param prefix: prefix prepended at each artifact's name
-        :param loss_name: name given to the loss for logging
-        """
-        self.log(f"loss/{prefix}_{loss_name}", loss)
-
-        for key, value in objectives.items():
-            self.log(f"objectives/{prefix}_{key}", value)
-
-        if self.metrics:
-            for key, value in metrics.items():
-                self.log(f"metrics/{prefix}_{key}", value)
-
-    def training_step(self, batch: Tuple[FeaturesType, TargetsType, ScenarioListType], batch_idx: int) -> torch.Tensor:
-        """
-        Step called for each batch example during training.
-
-        :param batch: example batch
-        :param batch_idx: batch's index (unused)
-        :return: model's loss tensor
-        """
-        return self._step(batch, "train")
-
-    def validation_step(
-        self, batch: Tuple[FeaturesType, TargetsType, ScenarioListType], batch_idx: int
-    ) -> torch.Tensor:
-        """
-        Step called for each batch example during validation.
-
-        :param batch: example batch
-        :param batch_idx: batch's index (unused)
-        :return: model's loss tensor
-        """
-        return self._step(batch, "val")
-
-    def test_step(self, batch: Tuple[FeaturesType, TargetsType, ScenarioListType], batch_idx: int) -> torch.Tensor:
-        """
-        Step called for each batch example during testing.
-
-        :param batch: example batch
-        :param batch_idx: batch's index (unused)
-        :return: model's loss tensor
-        """
-        return self._step(batch, "test")
-
-    def forward(self, features: FeaturesType) -> TargetsType:
-        """
-        Propagates a batch of features through the model.
-
-        :param features: features batch
-        :return: model's predictions
-        """
-        return self.model(features)
 
     def configure_optimizers(
         self,

@@ -2,35 +2,37 @@ import torch
 import torch.nn as nn
 from scipy.optimize import linear_sum_assignment
 
-from .indices import BoundingBoxIndex
 
 class RVAEHungarianMatching(nn.Module):
     """Object for hungarian matching of RVAE model"""
 
-    def __init__(self, key, config):
+    def __init__(self, config):
         """
         Initialize matching object of RVAE
         :param key: string identifier if sledge vector dataclass
         :param config: config dataclass of RVAE
         """
-        self._key = key
         self._config = config
 
     @torch.no_grad()
     def compute(self, predictions, targets, tgt_type):
 
-        pred_states = predictions[tgt_type]['vector']
-        pred_logits = predictions[tgt_type]['mask']
-        gt_states = targets[tgt_type]['vector']
-        gt_mask = targets[tgt_type]['mask']
+        pred_states = predictions[tgt_type]['vector']  # B, Q, D
+        print('pred_states', pred_states.shape)
+        pred_logits = predictions[tgt_type]['mask']    # B, Q
+        print('pred_logits', pred_logits.shape)
+        gt_states = targets[tgt_type]['vector']        # B, num_obj, D 
+        print('gt_states', gt_states.shape)
+        gt_mask = targets[tgt_type]['mask']            # B, num_obj
+        print('gt_mask', gt_mask.shape)
 
         ce_cost = _get_ce_cost(gt_mask, pred_logits)
 
-        if tgt_type == 'LANE':
+        if tgt_type == 'LANES':
             l1_cost = _get_line_l1_cost(gt_states, pred_states, gt_mask)
             ce_weight, reconstruction_weight = self._config.line_ce_weight, self._config.line_reconstruction_weight
         else:
-            l1_cost = _get_box_l1_cost(gt_states, pred_states, gt_mask, pred_vector_element.get_element_index())
+            l1_cost = _get_box_l1_cost(gt_states, pred_states, gt_mask)
             ce_weight, reconstruction_weight = self._config.box_ce_weight, self._config.box_reconstruction_weight
 
         cost = ce_weight * ce_cost + reconstruction_weight * l1_cost
@@ -39,6 +41,7 @@ class RVAEHungarianMatching(nn.Module):
         indices = [linear_sum_assignment(c) for i, c in enumerate(cost)]
         matching = [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
 
+        tgt_type = tgt_type.lower()
         return {f"{tgt_type}_matching": matching}
 
 
@@ -84,9 +87,7 @@ def _get_line_l1_cost(gt_states: torch.Tensor, pred_states: torch.Tensor, gt_mas
 # TODO: Replace box cost with your own BEV-DETR matching cost
 
 @torch.no_grad()
-def _get_box_l1_cost(
-    gt_states: torch.Tensor, pred_states: torch.Tensor, gt_mask: torch.Tensor, object_indexing: BoundingBoxIndex
-) -> torch.Tensor:
+def _get_box_l1_cost(gt_states: torch.Tensor, pred_states: torch.Tensor, gt_mask: torch.Tensor):
     """
     Calculates the L1 matching cost for bounding box state tensors, based on the (x,y) position.
     :param gt_states: ground-truth box tensor, shape: (batch, num_gt, state_size)
@@ -97,8 +98,8 @@ def _get_box_l1_cost(
     """
 
     # NOTE: Bounding Box L1 matching only considers position, ignoring irrelevant attr. (e.g. box extent)
-    gt_states_expanded = gt_states[:, :, None, object_indexing.POINT].detach()  # (b, ng, 1, 2)
-    pred_states_expanded = pred_states[:, None, :, object_indexing.POINT].detach()  # (b, 1, np, 2)
+    gt_states_expanded = gt_states[:, :, None, [0, 1]].detach()      # (b, ng, 1, 2)
+    pred_states_expanded = pred_states[:, None, :, [0, 1]].detach()  # (b, 1, np, 2)
     l1_cost = gt_mask[..., None] * (gt_states_expanded - pred_states_expanded).abs().sum(dim=-1)  # (b, ng, np)
     l1_cost = l1_cost.permute(0, 2, 1)  # (b, np, ng)
 

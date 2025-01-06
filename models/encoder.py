@@ -73,15 +73,12 @@ class RVAEEncoder(nn.Module):
         self._latent = nn.Conv2d(output_channels, 2 * config.latent_channel, kernel_size=3, stride=1, padding=1)
 
     def forward(self, raster: torch.Tensor) -> Tuple:
-        # raster : B, 4, 256, 256
+        # raster : B, 4, H, W
 
-        cnn_features = self._backbone(raster)["0"]          # B, h, w, D
-        print('cnn feat ', cnn_features.shape)
-        normed_features = self._group_norm(cnn_features)    # B, h, w, D
-        print('normed ', normed_features.shape)
+        cnn_features = self._backbone(raster)["0"]          # B, D, H//32, W//32  --> D = 2048
+        normed_features = self._group_norm(cnn_features)    # B, D, H//32, W//32
 
-        latent = self._latent(normed_features)
-        print('latent in enc ', latent.shape)
-        mu, log_var = torch.chunk(latent, 2, dim=1)        # B, 
+        latent = self._latent(normed_features)              # B, 2L, H//32, W//32 --> L = latent_channel
+        mu, log_var = torch.chunk(latent, 2, dim=1)         # B, L, H//32, W//32  (each) 
 
         return (mu, log_var)

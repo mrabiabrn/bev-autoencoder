@@ -19,7 +19,7 @@ class RVAEModel(nn.Module):
         Initialize Raster-Vector Autoencoder.
         :param config: configuration dataclass of RVAE.
         """
-        super().__init__(RVAEModel)
+        super().__init__()
 
         self._config = config
 
@@ -39,17 +39,19 @@ class RVAEModel(nn.Module):
         return mu + eps * std
 
     def forward(self, features, encode_only: bool = False):
-        # features : B, 4, 256, 256
+        # features : B, 4, H, W.  H = W = 256
+
+        predictions = {}                                   
 
         # encoding
-        mu, log_var = self._raster_encoder(features)
-        latent = self._reparameterize(mu, log_var)
+        mu, log_var = self._raster_encoder(features)        # B, L, 8, 8
+        latent = self._reparameterize(mu, log_var)          # B, L, 8, 8
         if encode_only:
             return latent
-
+        predictions["latent"] = {"mu": mu, "log_var": log_var, "latent": latent}
         # decoding
-        #predictions["sledge_vector"] = self._vector_decoder(latent)
-        return latent #predictions
+        predictions["vector"] = self._vector_decoder(latent)
+        return predictions 
 
     def get_encoder(self) -> nn.Module:
         """Inherited, see superclass."""

@@ -110,6 +110,9 @@ class RVAEDecoder(nn.Module):
                 patchify(dynamic_latent, self._config.patch_size),
             )
 
+            print('static ', static_patches.shape)
+            print('dynamic ', dynamic_latent.shape)
+
             num_patches = self._config.num_patches
             decoder_mask = create_mask(
                 num_patches,
@@ -119,9 +122,11 @@ class RVAEDecoder(nn.Module):
                 device,
             )
 
-            type_embed = self._type_encoding.weight[None, ...].repeat(b, 1, 1)  # (b, 2, d_model)
-            type_embed = type_embed.repeat_interleave(num_patches, 1)  # (b, 2*p*p, d_model)
-            type_embed = type_embed.permute(1, 0, 2)  # (2*p*p, b, d_model)
+            print('decoder_mask ', decoder_mask.shape)
+
+            type_embed = self._type_encoding.weight[None, ...].repeat(b, 1, 1)   # (b, 2, d_model)
+            type_embed = type_embed.repeat_interleave(num_patches, 1)            # (b, 2*p*p, d_model)
+            type_embed = type_embed.permute(1, 0, 2)                             # (2*p*p, b, d_model)
 
             pos_embed = self._position_encoding(static_patches)     # (b, d_model, p, p)
             pos_embed = pos_embed.flatten(-2).permute(2, 0, 1)      # (p*p, b, d_model)
@@ -144,12 +149,17 @@ class RVAEDecoder(nn.Module):
 
         query_embed = self._query_embedding.weight[:, None].repeat(1, b, 1)
 
+        print(projected_patches.shape)
+        print(query_embed.shape)
+        
         hs = self._transformer(
             src=projected_patches,
             query_embed=query_embed,
             pos_embed=pos_embed,
             memory_mask=decoder_mask,
         )[0].permute(1, 0, 2)
+
+        print('hs ', hs.shape)
 
         hs_line, hs_vehicle = hs.split(           # hs_pedestrian, hs_static, hs_green, hs_red, hs_ego 
             self._num_queries_list, dim=1
@@ -162,15 +172,18 @@ class RVAEDecoder(nn.Module):
         # red_line_element = self._red_line_head(hs_red)
         # ego_element = self._ego_head(hs_ego)
 
-        return (
-            line_element,
-            vehicle_element,
-            # pedestrian_element,
-            # static_object_element,
-            # green_line_element,
-            # red_line_element,
-            # ego_element,
-        )
+        return {
+                    'LANES': 
+                        {
+                            'vector': line_element[0],
+                            'mask': line_element[1],
+                        },
+                    'VEHICLES': 
+                        {
+                            'vector': vehicle_element[0],
+                            'mask': vehicle_element[1],
+                        }
+                    }
 
     def decode(self, latent: torch.Tensor) -> Tuple:
         """Alias for .forward()"""
@@ -276,8 +289,8 @@ class BoundingBoxHead(nn.Module):
         """
         super(BoundingBoxHead, self).__init__()
 
-        if enum == AgentIndex:
-            assert max_velocity is not None
+        #if enum == AgentIndex:
+        #    assert max_velocity is not None
 
         self._ffn_states = FFN(d_input, d_ffn, len(enum), num_layers)
         self._ffn_mask = nn.Linear(d_input, 1)
