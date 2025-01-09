@@ -15,12 +15,14 @@ def print_args(args):
     print(f"learning_rate: {args.learning_rate}")
     print(f"batch_size: {args.batch_size}")
     print(f"effective_batch_size: {args.batch_size * args.gradient_acc_steps}")
-    print(f"num_steps: {args.num_steps}")
+    print(f"num_epochs: {args.num_epochs}")
 
     print("====== ======= ======\n")
 
 
 def set_args(cfg):
+
+    cfg.project  = 'RVAE'
 
     assert 0 <= cfg.threshold <= 1, "Config threshold must be in [0,1]"
 
@@ -62,9 +64,14 @@ def get_args():
     with open(args.config, 'r') as config_file:
         cfg = yaml.safe_load(config_file)
 
-    cfg = set_args(cfg)
+    from types import SimpleNamespace
+    cfg = SimpleNamespace(**cfg)
+    args = set_args(cfg)
+    
+    print("Config:")
+    print(args)
 
-    for key, value in cfg.items():
+    for key, value in vars(args).items():
         setattr(args, key, value)
     
     args.gpus = torch.cuda.device_count()

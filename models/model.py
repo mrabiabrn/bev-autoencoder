@@ -1,5 +1,3 @@
-
-
 # Code mainly from: https://github.com/facebookresearch/detr (Apache-2.0 license)
 # TODO: Refactor & add docstring's
 
@@ -38,7 +36,7 @@ class RVAEModel(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def forward(self, features, encode_only: bool = False):
+    def forward(self, features, encode_only=False):
         # features : B, 4, H, W.  H = W = 256
 
         predictions = {}                                   
@@ -46,17 +44,12 @@ class RVAEModel(nn.Module):
         # encoding
         mu, log_var = self._raster_encoder(features)        # B, L, 8, 8
         latent = self._reparameterize(mu, log_var)          # B, L, 8, 8
+
         if encode_only:
             return latent
         predictions["latent"] = {"mu": mu, "log_var": log_var, "latent": latent}
+
         # decoding
         predictions["vector"] = self._vector_decoder(latent)
+
         return predictions 
-
-    def get_encoder(self) -> nn.Module:
-        """Inherited, see superclass."""
-        return self._raster_encoder
-
-    def get_decoder(self) -> nn.Module:
-        """Inherited, see superclass."""
-        return self._vector_decoder

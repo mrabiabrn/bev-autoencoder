@@ -197,7 +197,7 @@ class NuscenesDataset(Dataset):
 
         self.rand_crop_and_resize = args.rand_crop_and_resize
         self.final_dim = args.bev_resolution
-        self.img_resolution = args.img_resolution
+        #self.img_resolution = args.img_resolution
         if self.rand_crop_and_resize:
             self.resize_lim = [0.8,1.2]
             self.crop_offset = int(self.final_dim[0]*(1-self.resize_lim[0]))
@@ -273,6 +273,10 @@ class NuscenesDataset(Dataset):
         self.image_side_length = 2 * max(self.lane_rasterizer.meters_ahead, self.lane_rasterizer.meters_behind,
                                     self.lane_rasterizer.meters_left, self.lane_rasterizer.meters_right)
         self.image_side_length_pixels = int(self.image_side_length / self.lane_rasterizer.resolution)
+
+
+        self.max_num_vehicles = args.num_vehicles
+        self.max_num_lines = args.num_lines
         
 
     
@@ -318,13 +322,11 @@ class NuscenesDataset(Dataset):
         if True:
         #else:
             
-            print('Generating cache for idx:', idx)
+            #print('Generating cache for idx:', idx)
 
             # ============= Extract Vehicle Masks ===================
     
             lrtlist_, boxlist_, vislist_, tidlist_, ptslist_, yawlist_, sizelist_, bbox2dlist_, velocities_, classes_ = self.get_lrtlist(sample)
-
-            #np.savez(cache_path, map_rgb=map_vis.numpy(), vehicle_masks=bbox2dlist_.numpy())
 
             points = ptslist_  
             heading_angles = yawlist_
@@ -339,8 +341,8 @@ class NuscenesDataset(Dataset):
 
                 speed = speeds[i]
                 theta =  angle_diff(heading_angles[i] * np.pi ,  0, 2*np.pi) #(heading_angles[i] * np.pi + np.pi) #/ 2)   # 0, 2*pi
-                u = torch.cos(torch.tensor(theta)).item()     # between -1 and 1
-                v = torch.sin(torch.tensor(theta)).item()    # between -1 and 1
+                u = torch.cos(theta.clone()).item()    # between -1 and 1
+                v = torch.sin(theta.clone()).item()    # between -1 and 1
             
                 vehicles_raster[0][poly_mask == 1] = u  
                 vehicles_raster[1][poly_mask == 1] = -v 
@@ -352,10 +354,13 @@ class NuscenesDataset(Dataset):
 
             vehicles_raster = vehicles_raster.permute(1,2,0)   # 256, 256, 2
 
-            vehicles_vector = torch.zeros(len(bbox2dlist_), bbox2dlist_.shape[1])
-            vehicles_labels = torch.zeros(len(bbox2dlist_))
-            vehicles_vector[:len(bbox2dlist_)] = bbox2dlist_
-            vehicles_labels[:len(bbox2dlist_)] = True
+            vehicles_vector = torch.zeros(self.max_num_vehicles, bbox2dlist_.shape[1])   # len(bbox2dlist_)
+            vehicles_labels = torch.zeros(self.max_num_vehicles) #len(bbox2dlist_))
+            last_idx = min(len(bbox2dlist_), self.max_num_vehicles)
+            bbox2dlist_[:, :2] = (bbox2dlist_[:, :2] / self.final_dim[0]) * 2 - 1   # center x, center y
+            bbox2dlist_[:, -2:] = bbox2dlist_[:, -2:] * 2 - 1           # size x, size y
+            vehicles_vector[:last_idx] = (bbox2dlist_[:last_idx])
+            vehicles_labels[:last_idx] = True
 
             # ================= Extract Lane Masks =============
 
@@ -394,8 +399,6 @@ class NuscenesDataset(Dataset):
             lanes_eliminated = []
             mask = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 1))
             
-            
-            num_lines = 50
             num_line_poses = 20
             lanes_raster = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 2))
             lanes_in_frame = []
@@ -447,13 +450,16 @@ class NuscenesDataset(Dataset):
 
             lanes_raster = torch.from_numpy(lanes_raster)   # 256, 256, 4
 
-            lanes_vector = np.zeros((len(lanes_in_frame), num_line_poses, 2), dtype=np.float32)
-            lanes_labels = np.zeros((len(lanes_in_frame)), dtype=bool)
+            lanes_vector = torch.zeros(self.max_num_lines, num_line_poses, 2)  # len(lanes_in_frame)
+            lanes_labels = torch.zeros(self.max_num_lines)
             for lane_idx, lane in enumerate(lanes_in_frame):
+                if lane_idx >= self.max_num_lines:
+                    break
                 lane_pts_sampled = resample_lane_pts(lane, num_samples=num_line_poses)
-                lanes_vector[lane_idx] = lane_pts_sampled
+                lanes_vector[lane_idx] = (torch.from_numpy(lane_pts_sampled) / self.final_dim[0]) * 2 - 1
 
-            lanes_labels[: len(lanes_in_frame)] = True
+            last_idx = min(len(lanes_in_frame), self.max_num_lines)
+            lanes_labels[: last_idx] = True
 
         raster = torch.zeros(256, 256, 4)
         raster[..., :2] = lanes_raster
@@ -461,11 +467,11 @@ class NuscenesDataset(Dataset):
 
         target = {
             'features': raster.permute(2,0,1),                  # Z, X, 4
-            'city_token': city_token,            # 1
+            # 'city_token': city_token,            # 1
             'color_mask' : color_mask,
             'targets':{
-                        'LANE': {
-                                    'vector': lanes_vector,  # L, 2
+                        'LANES': {
+                                    'vector': lanes_vector,    # L, 20 ,2 
                                     'mask' : lanes_labels
                         },
                         'VEHICLES': {
@@ -609,7 +615,7 @@ class NuscenesDataset(Dataset):
             pts = box.bottom_corners()[:2].T    # Bottom corners. First two face forward, last two face backwards.
             pts = np.round((pts - self.bx[:2] + self.dx[:2]/2.) / self.dx[:2]).astype(np.int32)
             
-            pts[:, [1, 0]] = pts[:, [0, 1]]   # 4, 2 - switch x, y
+            pts[:, [1, 0]] = pts[:, [0, 1]]          # 4, 2 - switch x, y
             pts[:, 0] = self.X - 1 - pts[:, 0]       # horizontal flip
             
             if np.any(pts < 0) or np.any(pts > self.X):
@@ -644,16 +650,16 @@ class NuscenesDataset(Dataset):
 
             yawlist.append(yaw)
             
-            size = torch.clamp(box_[3:6], min = 0, max = 10.0) / 10.0  # l, w, h
+            size = torch.clamp(box_[3:6], min = 0, max = 15.0) / 15.0  # l, w, h
 
             velocity = self.nusc.box_velocity(tok)   # (vx ?, vy ?, vz)
             velocities.append(torch.Tensor([np.sqrt(velocity[0]**2 + velocity[1]**2)]))
 
-            vehicle_class = inst['category_name'].split('.')[-1]
-            class_idx = self.vehicle_classes.index(vehicle_class)
+            # vehicle_class = '_'.join(inst['category_name'].split('.')[1:])
+            # class_idx = self.vehicle_classes.index(vehicle_class)
+            class_idx = 0
             classes.append(torch.Tensor([class_idx]))
             # NOTE: for now class_idx is 0.
-            class_idx = 0
             
             bbox2d = torch.tensor([center_pt[0],center_pt[1],yaw,size[0],size[1]], dtype = torch.float32)
             bbox2dlist.append(bbox2d)

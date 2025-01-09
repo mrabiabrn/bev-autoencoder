@@ -1,10 +1,12 @@
 # === Data Related Parameters ===
 dataset_path: '/datasets/nuscenes'
 version: 'trainval'
+model_name: 'bev-autoencoder'
 res_scale: 1
 H: 1600
 W: 900
 resolution: [224, 400]
+bev_resolution: [256, 256]
 rand_crop_and_resize: false
 rand_flip: false
 cams: ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT']
@@ -12,53 +14,54 @@ ncams: 6
 aug: false
 do_shuffle_cams: false
 refcam_id: 1
-bounds: [-50, 50, -5, 5, -50, 50]
+bounds: [-64, 64, -5, 5, -64, 64]
 
 # === Log Parameters ===
-log_freq: 2000
+log_freq: 500
 
 # === Training Related Parameters ===
-learning_rate: 3e-4
-weight_decay: 1e-7
+learning_rate: 0.0001 #5e-5 
+weight_decay: 0.0005
 dropout: false
-batch_size: 2
+batch_size: 256       #64*4
 gradient_acc_steps: 1
-num_steps: 25000
-num_epochs: 10
+#num_steps: 25000
+num_epochs: 200 #50
 seed: 41
 
 # === Miscellaneous ===
 save_epoch: 10
 validate: false
-evaluate_all_val: false
+evaluate_all_val: True
 use_checkpoint: false
 checkpoint_path: null
 model_save_path: './checkpoints'
-
 
 #rvae:
 radius: 100
 pose_interval: 1.0
 
 # 2. features raster & vector
-frame: [64, 64]
+frame: [128, 128] #[64, 64]
+
+target_types: ['LANES', 'VEHICLES'] 
 
 num_lines: 50
 num_vehicles: 50
-num_pedestrians: 20
-num_static_objects: 30
-num_green_lights: 20
-num_red_lights: 20
+# num_pedestrians: 20
+# num_static_objects: 30
+# num_green_lights: 20
+# num_red_lights: 20
 
 num_line_poses: 20
-vehicle_max_velocity: null #15
-pedestrian_max_velocity: 2
+vehicle_max_velocity: null # 15
+#pedestrian_max_velocity: 2
 
-pixel_size: 0.25
+pixel_size: 0.5
 line_dots_radius: 0
 
 # 3. raster encoder π
-model_name: "resnet50"
+backbone: "resnet50"
 down_factor: 32  # NOTE: specific to resnet
 num_input_channels: 4
 latent_channel: 64
@@ -80,24 +83,24 @@ split_latent: True          # NOTE: we do not use dynamic/static split
 head_d_ffn: 1024
 head_num_layers: 2
 
-num_line_queries: 30
-num_vehicle_queries: 30
-num_pedestrian_queries: 10
-num_static_object_queries: 20
-num_green_light_queries: 10
-num_red_light_queries: 10
+num_line_queries: 50              #30
+num_vehicle_queries: 50           #30
+# num_pedestrian_queries: 10
+# num_static_object_queries: 20
+# num_green_light_queries: 10
+# num_red_light_queries: 10
 
 # matching & loss
-line_reconstruction_weight: 2.0
-line_ce_weight: 5.0
+line_reconstruction_weight: 5.0 #2.0
+line_ce_weight: 2.0  #5.0
 
-box_reconstruction_weight: 2.0
-box_ce_weight: 5.0
+box_reconstruction_weight: 5.0  #2.0
+box_ce_weight: 2.0   #5.0
 
-ego_reconstruction_weight: 1.0
+#ego_reconstruction_weight: 1.0
 kl_weight: 0.1
 
-norm_by_count: false
+norm_by_count: True
 
 # output
 threshold: 0.3

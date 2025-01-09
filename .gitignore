@@ -1,0 +1,8 @@
+checkpoints/*
+wandb/*
+__pycache__/*
+*.pyc
+models/__pycache__/*
+bev_utils/__pycache__/*
+._*
+models/._*

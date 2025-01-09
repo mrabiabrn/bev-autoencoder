@@ -57,7 +57,7 @@ class RVAEEncoder(nn.Module):
         super().__init__()
 
         # TODO: support more backbones.
-        backbone = getattr(torchvision.models, config.model_name)(
+        backbone = getattr(torchvision.models, config.backbone)(
             replace_stride_with_dilation=[False, False, False],
             weights="DEFAULT",
             norm_layer=FrozenBatchNorm2d,
@@ -66,7 +66,7 @@ class RVAEEncoder(nn.Module):
             backbone.conv1 = nn.Conv2d(config.num_input_channels, 64, 7, stride=2, padding=3, bias=False)
 
         self._backbone = IntermediateLayerGetter(backbone, return_layers={"layer4": "0"})
-        output_channels = 512 if config.model_name in ["resnet18", "resnet34"] else 2048
+        output_channels = 512 if config.backbone in ["resnet18", "resnet34"] else 2048
 
         # TODO: add params to config
         self._group_norm = nn.GroupNorm(num_groups=32, num_channels=output_channels, eps=1e-6, affine=True)

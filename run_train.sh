@@ -1,1 +1,1 @@
-torchrun --master_port=12345 --nproc_per_node=2 train.py --config config.yaml
+torchrun --master_port=12345 --nproc_per_node=4 train.py --config configs/base.yaml

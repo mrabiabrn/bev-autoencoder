@@ -7,6 +7,7 @@ class RVAEHungarianMatching(nn.Module):
     """Object for hungarian matching of RVAE model"""
 
     def __init__(self, config):
+        super().__init__()
         """
         Initialize matching object of RVAE
         :param key: string identifier if sledge vector dataclass
@@ -14,17 +15,16 @@ class RVAEHungarianMatching(nn.Module):
         """
         self._config = config
 
+    def forward(self, predictions, targets):
+        pass
+
     @torch.no_grad()
     def compute(self, predictions, targets, tgt_type):
 
         pred_states = predictions[tgt_type]['vector']  # B, Q, D
-        print('pred_states', pred_states.shape)
         pred_logits = predictions[tgt_type]['mask']    # B, Q
-        print('pred_logits', pred_logits.shape)
         gt_states = targets[tgt_type]['vector']        # B, num_obj, D 
-        print('gt_states', gt_states.shape)
         gt_mask = targets[tgt_type]['mask']            # B, num_obj
-        print('gt_mask', gt_mask.shape)
 
         ce_cost = _get_ce_cost(gt_mask, pred_logits)
 

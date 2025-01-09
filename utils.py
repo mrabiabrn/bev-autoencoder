@@ -13,14 +13,15 @@ from dataset import NuScenesDatasetWrapper
 def get_run_name(args):
 
     num_steps = str(args.num_steps//1000) + 'k'
+
+    line_reconstruction_weight = str(args.line_reconstruction_weight)
+    box_reconstruction_weight = str(args.box_reconstruction_weight)
+    line_ce_weight = str(args.line_ce_weight)
+    box_ce_weight = str(args.box_ce_weight)
   
-    res = str(args.resolution)
+    res = str(args.bev_resolution)
 
-    aug = '_aug' if args.rand_crop_and_resize else ''
-    finetune = '_finetune' if args.finetune else ''
-
-    run_name = res + args.model_name + ':' + args.backbone + '_bs:' + str(args.batch_size) + 'x' + str(args.gradient_acc_steps) + '_lr:' \
-                                + str(args.learning_rate) + '_' + num_steps + aug  + finetune 
+    run_name = res + '_lr' + str(args.learning_rate) + '_bs' + str(args.batch_size) + '_steps' + num_steps + '_line' + line_reconstruction_weight + '_box' + box_reconstruction_weight + '_linece' + line_ce_weight + '_boxce' + box_ce_weight + '_normbycnt_angle'
     return run_name
 
 
@@ -31,9 +32,9 @@ def init_model(args):
 
     model_name = args.model_name
     
-    if model_name == 'simplebev':
-        from models.simplebev import SimpleBEV
-        model = SimpleBEV(args)
+    if model_name == 'bev-autoencoder':
+        from models.wrapper import RVAEWrapper
+        model = RVAEWrapper(args)
     else:
         raise NotImplementedError
     
@@ -68,9 +69,9 @@ def print_model_summary(args, model):
 def init_logger(args,run_name):
 
     project_name = args.project
-    if args.validate:
-        project_name += '_val'
-        run_name = args.checkpoint_path.split('/')[-2]
+    # if args.validate:
+    #     project_name += '_val'
+    #     run_name = args.checkpoint_path.split('/')[-2]
 
     wandb.init(
                 project=project_name, 
@@ -138,6 +139,59 @@ def worker_rnd_init(x):
     np.random.seed(13 + x)
 
 
+import torch
+
+def rvae_collate_fn(batch):
+
+    features_list = []
+    city_token_list = []
+    color_mask_list = []
+
+    lane_vector_list = []
+    lane_mask_list = []
+
+    vehicles_vector_list = []
+    vehicles_mask_list = []
+
+    # 1. Collect all data from the batch
+    for item in batch:
+        features_list.append(item['features'])  # shape (Z, X, 4)
+        # city_token_list.append(item['city_token'])
+        color_mask_list.append(item['color_mask'])
+
+        lane_vector_list.append(item['targets']['LANES']['vector'])   # shape (L, 20, 2)?
+        lane_mask_list.append(item['targets']['LANES']['mask'])
+
+        vehicles_vector_list.append(item['targets']['VEHICLES']['vector'])  # shape (V, 5)?
+        vehicles_mask_list.append(item['targets']['VEHICLES']['mask'])
+
+    features_batch = torch.stack(features_list, dim=0)  # (B, Z, X, 4) 
+    color_mask_batch = torch.stack(color_mask_list, dim=0)  # (B, 3, X)
+    lane_vector_batch = torch.stack(lane_vector_list, dim=0)        # (B, L, 20, 2)
+    lane_mask_batch = torch.stack(lane_mask_list, dim=0)            # e.g. (B, L) or (B, L, 20)
+
+    vehicles_vector_batch = torch.stack(vehicles_vector_list, dim=0)   # (B, V, 5)
+    vehicles_mask_batch = torch.stack(vehicles_mask_list, dim=0)       # e.g. (B, V)
+
+    collated_batch = {
+        'features': features_batch,               # (B, Z, X, 4)
+        'color_mask': color_mask_batch,           # (B, 3, X)
+        'targets': {
+            'LANES': {
+                'vector': lane_vector_batch,      # (B, L, 20, 2)
+                'mask': lane_mask_batch
+            },
+            'VEHICLES': {
+                'vector': vehicles_vector_batch,  # (B, V, 5)
+                'mask': vehicles_mask_batch
+            }
+        }
+    }
+
+    return collated_batch
+
+
+
 def get_dataloaders(args, trainset, valset):
 
     train_sampler = torch.utils.data.DistributedSampler(trainset, num_replicas=args.gpus, rank=args.gpu, shuffle=True)
@@ -149,6 +203,7 @@ def get_dataloaders(args, trainset, valset):
         worker_init_fn=worker_rnd_init,
         drop_last=True,
         pin_memory=False,
+        collate_fn=rvae_collate_fn
     )
 
     val_dataloader = torch.utils.data.DataLoader(
@@ -158,6 +213,7 @@ def get_dataloaders(args, trainset, valset):
         num_workers=6, 
         drop_last=False, 
         pin_memory=False,
+        collate_fn=rvae_collate_fn
         )
      
     return train_dataloader, val_dataloader
@@ -184,7 +240,8 @@ def get_scheduler(args, optimizer, T_max=None):
         T_max = args.num_steps
 
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, args.learning_rate, T_max+100,
-        pct_start=0.05, cycle_momentum=False, anneal_strategy='linear')
+        pct_start=0.0, cycle_momentum=True, anneal_strategy='cos', div_factor=10.0, final_div_factor=10,
+        base_momentum=0.85, max_momentum=0.95)
     
     return scheduler
 

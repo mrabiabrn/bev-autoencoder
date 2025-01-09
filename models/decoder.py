@@ -110,9 +110,6 @@ class RVAEDecoder(nn.Module):
                 patchify(dynamic_latent, self._config.patch_size),
             )
 
-            print('static ', static_patches.shape)
-            print('dynamic ', dynamic_latent.shape)
-
             num_patches = self._config.num_patches
             decoder_mask = create_mask(
                 num_patches,
@@ -121,8 +118,6 @@ class RVAEDecoder(nn.Module):
                 sum(self._num_queries_list[1:]),
                 device,
             )
-
-            print('decoder_mask ', decoder_mask.shape)
 
             type_embed = self._type_encoding.weight[None, ...].repeat(b, 1, 1)   # (b, 2, d_model)
             type_embed = type_embed.repeat_interleave(num_patches, 1)            # (b, 2*p*p, d_model)
@@ -149,17 +144,12 @@ class RVAEDecoder(nn.Module):
 
         query_embed = self._query_embedding.weight[:, None].repeat(1, b, 1)
 
-        print(projected_patches.shape)
-        print(query_embed.shape)
-        
         hs = self._transformer(
             src=projected_patches,
             query_embed=query_embed,
             pos_embed=pos_embed,
             memory_mask=decoder_mask,
         )[0].permute(1, 0, 2)
-
-        print('hs ', hs.shape)
 
         hs_line, hs_vehicle = hs.split(           # hs_pedestrian, hs_static, hs_green, hs_red, hs_ego 
             self._num_queries_list, dim=1
@@ -256,7 +246,7 @@ class LineHead(nn.Module):
         batch_size, num_queries = queries.shape[:2]
         states = (
             self._ffn_states(queries).tanh().reshape(batch_size, num_queries, self._num_line_poses, len(LineIndex))
-            * self._frame_transform
+            #* self._frame_transform
         )
 
         states = states
@@ -307,8 +297,9 @@ class BoundingBoxHead(nn.Module):
 
         states = self._ffn_states(queries)
 
-        states[..., :2] = states[..., :2].tanh() * self._frame_transform
-        states[..., 2] = states[..., 2].tanh() * np.pi
+        states[..., :2] = states[..., :2].tanh() #* self._frame_transform
+        states[..., 2] = states[..., 2].tanh() #* np.pi
+        states[..., -2:] = states[..., -2:].tanh()
 
         if self._max_velocity is not None:
             states[..., -1] = states[..., -1].sigmoid() * self._max_velocity
