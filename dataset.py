@@ -277,6 +277,7 @@ class NuscenesDataset(Dataset):
 
         self.max_num_vehicles = args.num_vehicles
         self.max_num_lines = args.num_lines
+        self.vehicle_drop_rate = args.vehicle_drop_rate
         
 
     
@@ -319,147 +320,142 @@ class NuscenesDataset(Dataset):
             _, mH, mW = map_vis.shape
             vehicle_masks = torch.from_numpy(vehicle_masks)     # 1, Z, X
         '''
-        if True:
-        #else:
+        # ============= Extract Vehicle Masks ===================
+
+        lrtlist_, boxlist_, vislist_, tidlist_, ptslist_, yawlist_, sizelist_, bbox2dlist_, velocities_, classes_ = self.get_lrtlist(sample)
+
+        points = ptslist_  
+        heading_angles = yawlist_
+        speeds = velocities_
+
+        vehicles_raster = torch.zeros(2, self.final_dim[0], self.final_dim[1]).to(torch.float64)
+        for i in range(len(points)):
+            bbox = points[i].cpu().numpy().astype(np.int32)  
+            bbox[:,1] = self.final_dim[0] - 1 - bbox[:,1] 
+            poly_mask = np.zeros((self.final_dim[0], self.final_dim[1]), dtype=np.uint8)
+            cv2.fillPoly(poly_mask, [bbox], 1)
+
+            speed = speeds[i]
+            theta =  angle_diff(heading_angles[i] * np.pi ,  0, 2*np.pi) #(heading_angles[i] * np.pi + np.pi) #/ 2)   # 0, 2*pi
+            u = torch.cos(theta.clone()).item()    # between -1 and 1
+            v = torch.sin(theta.clone()).item()    # between -1 and 1
+        
+            vehicles_raster[0][poly_mask == 1] = u  
+            vehicles_raster[1][poly_mask == 1] = -v 
+        
+        color_mask = self.uv_to_color(vehicles_raster)                               # 3, Z, X
+
+        # uv_mask --> between 0 and 1     (or -1 to 1)
+        #vehicles_raster = (vehicles_raster + 1) / 2             # 2, 256, 256
+
+        vehicles_raster = vehicles_raster.permute(1,2,0)   # 256, 256, 2
+
+        vehicles_vector = torch.zeros(self.max_num_vehicles, bbox2dlist_.shape[1])   # len(bbox2dlist_)
+        vehicles_labels = torch.zeros(self.max_num_vehicles) #len(bbox2dlist_))
+        last_idx = min(len(bbox2dlist_), self.max_num_vehicles)
+        bbox2dlist_[:, :2] = (bbox2dlist_[:, :2] / self.final_dim[0]) * 2 - 1   # center x, center y
+        bbox2dlist_[:, -2:] = bbox2dlist_[:, -2:] * 2 - 1           # size x, size y
+        vehicles_vector[:last_idx] = (bbox2dlist_[:last_idx])
+        vehicles_labels[:last_idx] = True
+
+        # ================= Extract Lane Masks =============
+
+        egopose = self.nusc.get('ego_pose', self.nusc.get('sample_data', sample['data']['LIDAR_TOP'])['ego_pose_token'])
+        trans = egopose['translation']
+        rot = egopose['rotation']
+        sample_token = sample['token']
+
+        map_name = self.lane_rasterizer.helper.get_map_name_from_sample_token(sample_token)
+
+        x, y = trans[:2]                                                                          # ego trans
+        yaw = quaternion_yaw(Quaternion(rot)) 
+        patchbox = get_patchbox(x, y, self.image_side_length)
+        
+        images = []
+        
+        agent_x, agent_y = x, y  
+        agent_yaw = yaw 
+        radius=64
+        image_resolution=self.lane_rasterizer.resolution
+        discretization_resolution_meters=1
+        map_api=self.lane_rasterizer.maps[map_name]
+        
+        agent_pixels = int(self.image_side_length_pixels / 2), int(self.image_side_length_pixels / 2)
+        base_image = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 3))
+        
+        lanes = get_lanes_in_radius(agent_x, agent_y, radius, discretization_resolution_meters, map_api)
+
+        image = base_image
+        agent_global_coords = (agent_x, agent_y)
+        agent_yaw_in_radians = agent_yaw
+        agent_pixels = agent_pixels
+        resolution = image_resolution
+        color_function=color_by_yaw
+        rotation_mat = get_rotation_matrix(base_image.shape, agent_yaw)
+        lanes_eliminated = []
+        mask = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 1))
+        
+        num_line_poses = 20
+        lanes_raster = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 2))
+        lanes_in_frame = []
+
+        for poses_along_lane in lanes.values():
+
+            lanes_eliminated.append([])
             
-            #print('Generating cache for idx:', idx)
-
-            # ============= Extract Vehicle Masks ===================
-    
-            lrtlist_, boxlist_, vislist_, tidlist_, ptslist_, yawlist_, sizelist_, bbox2dlist_, velocities_, classes_ = self.get_lrtlist(sample)
-
-            points = ptslist_  
-            heading_angles = yawlist_
-            speeds = velocities_
-
-            vehicles_raster = torch.zeros(2, self.final_dim[0], self.final_dim[1]).to(torch.float64)
-            for i in range(len(points)):
-                bbox = points[i].cpu().numpy().astype(np.int32)  
-                bbox[:,1] = self.final_dim[0] - 1 - bbox[:,1] 
-                poly_mask = np.zeros((self.final_dim[0], self.final_dim[1]), dtype=np.uint8)
-                cv2.fillPoly(poly_mask, [bbox], 1)
-
-                speed = speeds[i]
-                theta =  angle_diff(heading_angles[i] * np.pi ,  0, 2*np.pi) #(heading_angles[i] * np.pi + np.pi) #/ 2)   # 0, 2*pi
-                u = torch.cos(theta.clone()).item()    # between -1 and 1
-                v = torch.sin(theta.clone()).item()    # between -1 and 1
-            
-                vehicles_raster[0][poly_mask == 1] = u  
-                vehicles_raster[1][poly_mask == 1] = -v 
-            
-            color_mask = self.uv_to_color(vehicles_raster)                               # 3, Z, X
-
-            # uv_mask --> between 0 and 1     (or -1 to 1)
-            #vehicles_raster = (vehicles_raster + 1) / 2             # 2, 256, 256
-
-            vehicles_raster = vehicles_raster.permute(1,2,0)   # 256, 256, 2
-
-            vehicles_vector = torch.zeros(self.max_num_vehicles, bbox2dlist_.shape[1])   # len(bbox2dlist_)
-            vehicles_labels = torch.zeros(self.max_num_vehicles) #len(bbox2dlist_))
-            last_idx = min(len(bbox2dlist_), self.max_num_vehicles)
-            bbox2dlist_[:, :2] = (bbox2dlist_[:, :2] / self.final_dim[0]) * 2 - 1   # center x, center y
-            bbox2dlist_[:, -2:] = bbox2dlist_[:, -2:] * 2 - 1           # size x, size y
-            vehicles_vector[:last_idx] = (bbox2dlist_[:last_idx])
-            vehicles_labels[:last_idx] = True
-
-            # ================= Extract Lane Masks =============
-
-            egopose = self.nusc.get('ego_pose', self.nusc.get('sample_data', sample['data']['LIDAR_TOP'])['ego_pose_token'])
-            trans = egopose['translation']
-            rot = egopose['rotation']
-            sample_token = sample['token']
-
-            map_name = self.lane_rasterizer.helper.get_map_name_from_sample_token(sample_token)
-
-            x, y = trans[:2]                                                                          # ego trans
-            yaw = quaternion_yaw(Quaternion(rot)) 
-            patchbox = get_patchbox(x, y, self.image_side_length)
-            
-            images = []
-            
-            agent_x, agent_y = x, y  
-            agent_yaw = yaw 
-            radius=64
-            image_resolution=self.lane_rasterizer.resolution
-            discretization_resolution_meters=1
-            map_api=self.lane_rasterizer.maps[map_name]
-            
-            agent_pixels = int(self.image_side_length_pixels / 2), int(self.image_side_length_pixels / 2)
-            base_image = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 3))
-            
-            lanes = get_lanes_in_radius(agent_x, agent_y, radius, discretization_resolution_meters, map_api)
-
-            image = base_image
-            agent_global_coords = (agent_x, agent_y)
-            agent_yaw_in_radians = agent_yaw
-            agent_pixels = agent_pixels
-            resolution = image_resolution
-            color_function=color_by_yaw
-            rotation_mat = get_rotation_matrix(base_image.shape, agent_yaw)
-            lanes_eliminated = []
-            mask = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 1))
-            
-            num_line_poses = 20
-            lanes_raster = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 2))
-            lanes_in_frame = []
-
-            for poses_along_lane in lanes.values():
-
-                lanes_eliminated.append([])
+            for start_pose, end_pose in zip(poses_along_lane[:-1], poses_along_lane[1:]):
+        
+                start_pixels = convert_to_pixel_coords(start_pose[:2], agent_global_coords, agent_pixels, resolution)
+                end_pixels = convert_to_pixel_coords(end_pose[:2], agent_global_coords, agent_pixels, resolution)
+        
+                start_pixels = (start_pixels[1], start_pixels[0])
+                end_pixels = (end_pixels[1], end_pixels[0])
+        
+                rotation_mat = get_rotation_matrix(base_image.shape, agent_yaw)
                 
-                for start_pose, end_pose in zip(poses_along_lane[:-1], poses_along_lane[1:]):
-            
-                    start_pixels = convert_to_pixel_coords(start_pose[:2], agent_global_coords, agent_pixels, resolution)
-                    end_pixels = convert_to_pixel_coords(end_pose[:2], agent_global_coords, agent_pixels, resolution)
-            
-                    start_pixels = (start_pixels[1], start_pixels[0])
-                    end_pixels = (end_pixels[1], end_pixels[0])
-            
-                    rotation_mat = get_rotation_matrix(base_image.shape, agent_yaw)
-                    
-                    start_array = np.array(start_pixels, dtype=np.float32).reshape(1, 2)
-                    end_array   = np.array(end_pixels,   dtype=np.float32).reshape(1, 2)
-                    
-                    rotated_start = rotate_points_2d(start_array, rotation_mat)[0]
-                    rotated_end   = rotate_points_2d(end_array,   rotation_mat)[0]
-                    
-                    rotated_start = tuple(rotated_start.astype(int))
-                    rotated_end   = tuple(rotated_end.astype(int))
-            
-                    if rotated_start[0] >= self.image_side_length_pixels or rotated_start[0] < 0 or rotated_start[1] >= self.image_side_length_pixels or rotated_start[1] < 0:
-                        continue
-                    
-                    angle = angle_diff(agent_yaw_in_radians,  start_pose[2], 2*np.pi) + np.pi # [-pi, +pi] + pi --> [0, 2*pi]
-                    u = np.cos(angle)    # -1, 1
-                    v = np.sin(angle)    # -1, 1
-                    lanes_raster[rotated_start[1], rotated_start[0]] = np.array([u, v])       # encoding relative orientation
-            
-                    lanes_eliminated[-1].append(rotated_start)
-                    
-                    #color = color_function(agent_yaw_in_radians, start_pose[2])
-            
-                    #cv2.line(image, rotated_start, rotated_end, color, thickness=2)
-                    
-                cur_lane = lanes_eliminated[-1]
-                if len(cur_lane) < 3:
-                    for pixel in cur_lane: 
-                        lanes_raster[pixel[1], pixel[0]][0] = 0 
-                        lanes_raster[pixel[1], pixel[0]][1] = 0 
+                start_array = np.array(start_pixels, dtype=np.float32).reshape(1, 2)
+                end_array   = np.array(end_pixels,   dtype=np.float32).reshape(1, 2)
+                
+                rotated_start = rotate_points_2d(start_array, rotation_mat)[0]
+                rotated_end   = rotate_points_2d(end_array,   rotation_mat)[0]
+                
+                rotated_start = tuple(rotated_start.astype(int))
+                rotated_end   = tuple(rotated_end.astype(int))
+        
+                if rotated_start[0] >= self.image_side_length_pixels or rotated_start[0] < 0 or rotated_start[1] >= self.image_side_length_pixels or rotated_start[1] < 0:
                     continue
-                lanes_in_frame.append(cur_lane)
+                
+                angle = angle_diff(agent_yaw_in_radians,  start_pose[2], 2*np.pi) + np.pi # [-pi, +pi] + pi --> [0, 2*pi]
+                u = np.cos(angle)    # -1, 1
+                v = np.sin(angle)    # -1, 1
+                lanes_raster[rotated_start[1], rotated_start[0]] = np.array([u, v])       # encoding relative orientation
+        
+                lanes_eliminated[-1].append(rotated_start)
+                
+                #color = color_function(agent_yaw_in_radians, start_pose[2])
+        
+                #cv2.line(image, rotated_start, rotated_end, color, thickness=2)
+                
+            cur_lane = lanes_eliminated[-1]
+            if len(cur_lane) < 3:
+                for pixel in cur_lane: 
+                    lanes_raster[pixel[1], pixel[0]][0] = 0 
+                    lanes_raster[pixel[1], pixel[0]][1] = 0 
+                continue
+            lanes_in_frame.append(cur_lane)
 
-            lanes_raster = torch.from_numpy(lanes_raster)   # 256, 256, 4
+        lanes_raster = torch.from_numpy(lanes_raster)   # 256, 256, 4
 
-            lanes_vector = torch.zeros(self.max_num_lines, num_line_poses, 2)  # len(lanes_in_frame)
-            lanes_labels = torch.zeros(self.max_num_lines)
-            for lane_idx, lane in enumerate(lanes_in_frame):
-                if lane_idx >= self.max_num_lines:
-                    break
-                lane_pts_sampled = resample_lane_pts(lane, num_samples=num_line_poses)
-                lanes_vector[lane_idx] = (torch.from_numpy(lane_pts_sampled) / self.final_dim[0]) * 2 - 1
+        lanes_vector = torch.zeros(self.max_num_lines, num_line_poses, 2)  # len(lanes_in_frame)
+        lanes_labels = torch.zeros(self.max_num_lines)
+        for lane_idx, lane in enumerate(lanes_in_frame):
+            if lane_idx >= self.max_num_lines:
+                break
+            lane_pts_sampled = resample_lane_pts(lane, num_samples=num_line_poses)
+            lanes_vector[lane_idx] = (torch.from_numpy(lane_pts_sampled) / self.final_dim[0]) * 2 - 1
 
-            last_idx = min(len(lanes_in_frame), self.max_num_lines)
-            lanes_labels[: last_idx] = True
+        last_idx = min(len(lanes_in_frame), self.max_num_lines)
+        lanes_labels[: last_idx] = True
 
         raster = torch.zeros(256, 256, 4)
         raster[..., :2] = lanes_raster
@@ -606,6 +602,10 @@ class NuscenesDataset(Dataset):
                 continue
             
             if int(inst['visibility_token']) == 1:
+                continue
+
+            # randomly drop some instances during training
+            if self.is_train and random.random() < self.vehicle_drop_rate:
                 continue
 
             box = Box(inst['translation'], inst['size'], Quaternion(inst['rotation']))

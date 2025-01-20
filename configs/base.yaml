@@ -15,6 +15,7 @@ aug: false
 do_shuffle_cams: false
 refcam_id: 1
 bounds: [-64, 64, -5, 5, -64, 64]
+vehicle_drop_rate: 0.3
 
 # === Log Parameters ===
 log_freq: 500
@@ -23,11 +24,10 @@ log_freq: 500
 learning_rate: 0.0001 #5e-5 
 weight_decay: 0.0005
 dropout: false
-batch_size: 256       #64*4
+batch_size: 256            #256       #64*4
 gradient_acc_steps: 1
-#num_steps: 25000
-num_epochs: 200 #50
-seed: 41
+num_epochs: 400    #200 #50
+seed: 3407
 
 # === Miscellaneous ===
 save_epoch: 10
@@ -46,7 +46,7 @@ frame: [128, 128] #[64, 64]
 
 target_types: ['LANES', 'VEHICLES'] 
 
-num_lines: 50
+num_lines: 50 #30
 num_vehicles: 50
 # num_pedestrians: 20
 # num_static_objects: 30
@@ -94,13 +94,14 @@ num_vehicle_queries: 50           #30
 line_reconstruction_weight: 5.0 #2.0
 line_ce_weight: 2.0  #5.0
 
-box_reconstruction_weight: 5.0  #2.0
+box_reconstruction_weight: 15.0  #2.0
+box_angle_weight: 4.0
 box_ce_weight: 2.0   #5.0
 
 #ego_reconstruction_weight: 1.0
-kl_weight: 0.1
+kl_weight: 0.05 #0.1
 
-norm_by_count: True
+norm_by_count: False #True
 
 # output
 threshold: 0.3

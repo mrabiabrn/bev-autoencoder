@@ -44,15 +44,16 @@ class RVAEWrapper(nn.Module):
         predictions = self.model(features)                                                  # ((lane_vector, lane_mask), (vehicle_vector, vehicle_mask))
         matchings = self._compute_matchings(predictions["vector"], targets)                 # {'LANE_matching': [(tensor, tensor)], 'VEHICLE_matching': [(tensor, tensor)]}
         objectives = self._compute_objectives(predictions, targets, matchings)
-        metrics = self._compute_metrics(predictions["latent"], targets, matchings)
+        #metrics = self._compute_metrics(predictions["latent"], targets, matchings)
         loss = torch.stack(list(objectives.values())).sum()
 
         logs = {f"total_loss": loss, "loss_details": {}}
         logs["loss_details"].update(objectives)
-        logs["loss_details"].update(metrics)
-        # TODO: logs update for matchings & predictions
+        #logs["loss_details"].update(metrics)
+
         logs.update(matchings)
         logs.update(predictions)
+
         return logs
 
     def _compute_objectives(self, predictions, targets, matchings):

@@ -18,10 +18,13 @@ def get_run_name(args):
     box_reconstruction_weight = str(args.box_reconstruction_weight)
     line_ce_weight = str(args.line_ce_weight)
     box_ce_weight = str(args.box_ce_weight)
+    box_angle_weight = str(args.box_angle_weight)
   
     res = str(args.bev_resolution)
 
-    run_name = res + '_lr' + str(args.learning_rate) + '_bs' + str(args.batch_size) + '_steps' + num_steps + '_line' + line_reconstruction_weight + '_box' + box_reconstruction_weight + '_linece' + line_ce_weight + '_boxce' + box_ce_weight + '_normbycnt_angle'
+    vehicle_drop = str(args.vehicle_drop_rate)
+
+    run_name = res + '_lr' + str(args.learning_rate) + '_bs' + str(args.batch_size) + '_steps' + num_steps + '_line' + line_reconstruction_weight + '_box' + box_reconstruction_weight + '_linece' + line_ce_weight + '_boxce' + box_ce_weight + 'angle' + box_angle_weight + '_vehicledrop' + vehicle_drop
     return run_name
 
 

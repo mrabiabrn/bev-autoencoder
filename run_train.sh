@@ -1,1 +1,1 @@
-torchrun --master_port=12345 --nproc_per_node=4 train.py --config configs/base.yaml
+WANDB_MODE=offline torchrun --master_port=12395 --nproc_per_node=4 train.py --config configs/base.yaml

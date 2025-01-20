@@ -291,7 +291,7 @@ def eval(model, val_dataloader):
         out = model(batch)
 
         total_loss += out['total_loss']
-        kl_metric = out['loss_details']['kl_metric']
+        #kl_metric = out['loss_details']['kl_metric']
 
         if len(wandb_images) < 5:
     
@@ -329,9 +329,8 @@ def eval(model, val_dataloader):
             
             wandb_images.append(wandb.Image(concat, caption=f"GT - Pred - Overlay"))
 
-
         # ===  Segmentation Evaluation ===
-        metric_desc = f"kl_metric: {kl_metric}"
+        metric_desc = f"Val: "
 
         # === Logger ===
         val_loader.set_description(metric_desc)
