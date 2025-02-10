@@ -259,7 +259,16 @@ class NuscenesDataset(Dataset):
             bounds=self.bounds,
             assert_cube=False)
         
-        self.vehicle_classes = ['car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
+        #self.vehicle_classes = ['car', 'truck', 'construction_vehicle', 'bus', 'trailer', 'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
+
+        self.vehicle_classes = ['vehicle.bicycle', 
+                                'vehicle.bus', 
+                                'vehicle.car', 
+                                'vehicle.construction', 
+                                'vehicle.emergency',
+                                'vehicle.motorcycle', 
+                                'vehicle.trailer', 
+                                'vehicle.truck']
 
         self.helper = PredictHelper(nusc)
         self.lane_rasterizer = StaticLayerRasterizer(self.helper)
@@ -322,7 +331,7 @@ class NuscenesDataset(Dataset):
         '''
         # ============= Extract Vehicle Masks ===================
 
-        lrtlist_, boxlist_, vislist_, tidlist_, ptslist_, yawlist_, sizelist_, bbox2dlist_, velocities_, classes_ = self.get_lrtlist(sample)
+        lrtlist_, boxlist_, vislist_, tidlist_, ptslist_, yawlist_, sizelist_, bbox2dlist_,  bbox3dlist_, velocities_, classes_ = self.get_lrtlist(sample)
 
         points = ptslist_  
         heading_angles = yawlist_
@@ -350,13 +359,22 @@ class NuscenesDataset(Dataset):
 
         vehicles_raster = vehicles_raster.permute(1,2,0)   # 256, 256, 2
 
-        vehicles_vector = torch.zeros(self.max_num_vehicles, bbox2dlist_.shape[1])   # len(bbox2dlist_)
+        vehicles_vector = torch.zeros(self.max_num_vehicles, bbox3dlist_.shape[1])   # len(bbox2dlist_)
         vehicles_labels = torch.zeros(self.max_num_vehicles) #len(bbox2dlist_))
-        last_idx = min(len(bbox2dlist_), self.max_num_vehicles)
-        bbox2dlist_[:, :2] = (bbox2dlist_[:, :2] / self.final_dim[0]) * 2 - 1   # center x, center y
-        bbox2dlist_[:, -2:] = bbox2dlist_[:, -2:] * 2 - 1           # size x, size y
-        vehicles_vector[:last_idx] = (bbox2dlist_[:last_idx])
+        vehicles_classes = torch.zeros(self.max_num_vehicles) #len(bbox2dlist_))
+        last_idx = min(len(bbox3dlist_), self.max_num_vehicles)
+        bbox3dlist_[:,:2] /= 64.0 # -1, 1
+        #bbox3dlist_[:,:2] = bbox3dlist_[:,:2] * 0.5 + 0.5  # 0, 1
+        # clamp it between -5 + 5
+        bbox3dlist_[:,2] = torch.clamp(bbox3dlist_[:,2], min = -8, max = 8) / 8.0
+        #bbox3dlist_[:,2] = bbox3dlist_[:,2] * 0.5 + 0.5    # 0, 1
+        #bbox2dlist_[:, :2] = (bbox2dlist_[:, :2] / self.final_dim[0]) * 2 - 1   # center x, center y
+        #bbox2dlist_[:, -2:] = bbox2dlist_[:, -2:] * 2 - 1                       # size x, size y
+        bbox3dlist_[:,3:6] = torch.clamp(bbox3dlist_[:,3:6], min = 0, max = 15.0) / 15.0  
+        bbox3dlist_[:,3:6] = bbox3dlist_[:,3:6] * 2 - 1
+        vehicles_vector[:last_idx] = (bbox3dlist_[:last_idx])
         vehicles_labels[:last_idx] = True
+        vehicles_classes[:last_idx] = classes_[:last_idx].view(-1)
 
         # ================= Extract Lane Masks =============
 
@@ -390,7 +408,7 @@ class NuscenesDataset(Dataset):
         agent_yaw_in_radians = agent_yaw
         agent_pixels = agent_pixels
         resolution = image_resolution
-        color_function=color_by_yaw
+        color_function= color_by_yaw
         rotation_mat = get_rotation_matrix(base_image.shape, agent_yaw)
         lanes_eliminated = []
         mask = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 1))
@@ -472,7 +490,9 @@ class NuscenesDataset(Dataset):
                         },
                         'VEHICLES': {
                                     'vector': vehicles_vector,  # V, 5
-                                    'mask' : vehicles_labels
+                                    'mask' : vehicles_labels,
+                                    'class': vehicles_classes
+
                         }
             }
         }
@@ -592,6 +612,7 @@ class NuscenesDataset(Dataset):
         yawlist = []
         sizelist = []
         bbox2dlist = []
+        bbox3dlist = []
         velocities = []
         classes = []
         for tok in rec['anns']:
@@ -655,14 +676,26 @@ class NuscenesDataset(Dataset):
             velocity = self.nusc.box_velocity(tok)   # (vx ?, vy ?, vz)
             velocities.append(torch.Tensor([np.sqrt(velocity[0]**2 + velocity[1]**2)]))
 
-            # vehicle_class = '_'.join(inst['category_name'].split('.')[1:])
-            # class_idx = self.vehicle_classes.index(vehicle_class)
-            class_idx = 0
-            classes.append(torch.Tensor([class_idx]))
+            vehicle_class = '.'.join(inst['category_name'].split('.')[:2])
+            class_idx = self.vehicle_classes.index(vehicle_class)
+            
+            # ['car', 'truck', 'construction_vehicle', 'bus', 
+            # 'trailer', 'barrier', 'motorcycle', 'bicycle', 
+            # 'pedestrian', 'traffic_cone']
+
+            #class_idx = 0
+            classes.append(torch.Tensor([class_idx + 1]))
             # NOTE: for now class_idx is 0.
             
             bbox2d = torch.tensor([center_pt[0],center_pt[1],yaw,size[0],size[1]], dtype = torch.float32)
             bbox2dlist.append(bbox2d)
+
+            bbox3d = torch.zeros(7)
+            bbox3d[:-1] = box_[:6]
+            bbox3d[-1] = yaw
+            bbox3d[[0,1]] = bbox3d[[1,0]] 
+            bbox3d[0] = (-1) * bbox3d[0]    
+            bbox3dlist.append(bbox3d)
 
             
         if len(ptslist):
@@ -673,6 +706,7 @@ class NuscenesDataset(Dataset):
             classes = torch.stack(classes, dim=0)
             # sizelist = torch.stack(sizelist, dim=0)
             bbox2dlist = torch.stack(bbox2dlist, dim=0)
+            bbox3dlist = torch.stack(bbox3dlist, dim=0)
             # tidlist = torch.stack(tidlist, dim=0)
         else:
             lrtlist = torch.zeros((0, 19))
@@ -682,11 +716,12 @@ class NuscenesDataset(Dataset):
             yawlist = torch.zeros((0))
             sizelist = torch.zeros((0, 2))
             bbox2dlist = torch.zeros((0, 5))
+            bbox3dlist = torch.zeros((0, 7))
             velocities =  torch.zeros((0))
             classes =  torch.zeros((0))
             # tidlist = torch.zeros((0))
 
-        return lrtlist, boxlist, vislist, tidlist, ptslist, yawlist, sizelist, bbox2dlist, velocities, classes
+        return lrtlist, boxlist, vislist, tidlist, ptslist, yawlist, sizelist, bbox2dlist, bbox3dlist, velocities, classes
     
 
     

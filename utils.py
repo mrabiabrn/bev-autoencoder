@@ -24,7 +24,7 @@ def get_run_name(args):
 
     vehicle_drop = str(args.vehicle_drop_rate)
 
-    run_name = res + '_lr' + str(args.learning_rate) + '_bs' + str(args.batch_size) + '_steps' + num_steps + '_line' + line_reconstruction_weight + '_box' + box_reconstruction_weight + '_linece' + line_ce_weight + '_boxce' + box_ce_weight + 'angle' + box_angle_weight + '_vehicledrop' + vehicle_drop
+    run_name = res + '_lr' + str(args.learning_rate) + '_bs' + str(args.batch_size) + '_steps' + num_steps + '_line' + line_reconstruction_weight + '_box' + box_reconstruction_weight + '_linece' + line_ce_weight + '_boxce' + box_ce_weight + 'angle' + box_angle_weight + '_vehicledrop' + vehicle_drop + '_3d_classes'
     return run_name
 
 
@@ -155,6 +155,7 @@ def rvae_collate_fn(batch):
 
     vehicles_vector_list = []
     vehicles_mask_list = []
+    vehicles_classes_list = []
 
     # 1. Collect all data from the batch
     for item in batch:
@@ -167,6 +168,7 @@ def rvae_collate_fn(batch):
 
         vehicles_vector_list.append(item['targets']['VEHICLES']['vector'])  # shape (V, 5)?
         vehicles_mask_list.append(item['targets']['VEHICLES']['mask'])
+        vehicles_classes_list.append(item['targets']['VEHICLES']['class'])
 
     features_batch = torch.stack(features_list, dim=0)  # (B, Z, X, 4) 
     color_mask_batch = torch.stack(color_mask_list, dim=0)  # (B, 3, X)
@@ -175,6 +177,7 @@ def rvae_collate_fn(batch):
 
     vehicles_vector_batch = torch.stack(vehicles_vector_list, dim=0)   # (B, V, 5)
     vehicles_mask_batch = torch.stack(vehicles_mask_list, dim=0)       # e.g. (B, V)
+    vehicles_classes_batch = torch.stack(vehicles_classes_list, dim=0)  # (B, V)
 
     collated_batch = {
         'features': features_batch,               # (B, Z, X, 4)
@@ -186,7 +189,8 @@ def rvae_collate_fn(batch):
             },
             'VEHICLES': {
                 'vector': vehicles_vector_batch,  # (B, V, 5)
-                'mask': vehicles_mask_batch
+                'mask': vehicles_mask_batch,
+                'class': vehicles_classes_batch
             }
         }
     }

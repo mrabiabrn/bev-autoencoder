@@ -154,6 +154,7 @@ class RVAEDecoder(nn.Module):
         hs_line, hs_vehicle = hs.split(           # hs_pedestrian, hs_static, hs_green, hs_red, hs_ego 
             self._num_queries_list, dim=1
         )
+        # hs_line --> (b, num_line_queries, d_model)
         line_element = self._line_head(hs_line)
         vehicle_element = self._vehicle_head(hs_vehicle)
         # pedestrian_element = self._pedestrian_head(hs_pedestrian)
@@ -172,7 +173,8 @@ class RVAEDecoder(nn.Module):
                         {
                             'vector': vehicle_element[0],
                             'mask': vehicle_element[1],
-                        }
+                        },
+                    'hs_vehicle': hs_vehicle,
                     }
 
     def decode(self, latent: torch.Tensor) -> Tuple:
@@ -283,7 +285,7 @@ class BoundingBoxHead(nn.Module):
         #    assert max_velocity is not None
 
         self._ffn_states = FFN(d_input, d_ffn, len(enum), num_layers)
-        self._ffn_mask = nn.Linear(d_input, 1)
+        self._ffn_mask = nn.Linear(d_input, 9) #1) including null class
 
         self._enum = enum
         self._max_velocity = max_velocity
@@ -297,14 +299,15 @@ class BoundingBoxHead(nn.Module):
 
         states = self._ffn_states(queries)
 
-        states[..., :2] = states[..., :2].tanh() #* self._frame_transform
-        states[..., 2] = states[..., 2].tanh() #* np.pi
-        states[..., -2:] = states[..., -2:].tanh()
+        # states[..., :2] = states[..., :2].tanh() #* self._frame_transform
+        # states[..., 2] = states[..., 2].tanh() #* np.pi
+        # states[..., -2:] = states[..., -2:].tanh()
+        states = states.tanh()
 
         if self._max_velocity is not None:
             states[..., -1] = states[..., -1].sigmoid() * self._max_velocity
 
-        mask = self._ffn_mask(queries).squeeze(dim=-1)
+        mask = self._ffn_mask(queries) #.squeeze(dim=-1)    # B, Q, 9
         return (states, mask)
 
 

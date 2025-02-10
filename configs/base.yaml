@@ -24,7 +24,7 @@ log_freq: 500
 learning_rate: 0.0001 #5e-5 
 weight_decay: 0.0005
 dropout: false
-batch_size: 256            #256       #64*4
+batch_size: 128            #256       #64*4
 gradient_acc_steps: 1
 num_epochs: 400    #200 #50
 seed: 3407
@@ -42,11 +42,11 @@ radius: 100
 pose_interval: 1.0
 
 # 2. features raster & vector
-frame: [128, 128] #[64, 64]
+frame: [128, 128]       #[64, 64]
 
 target_types: ['LANES', 'VEHICLES'] 
 
-num_lines: 50 #30
+num_lines: 50           #30
 num_vehicles: 50
 # num_pedestrians: 20
 # num_static_objects: 30
@@ -91,15 +91,15 @@ num_vehicle_queries: 50           #30
 # num_red_light_queries: 10
 
 # matching & loss
-line_reconstruction_weight: 5.0 #2.0
-line_ce_weight: 2.0  #5.0
+line_reconstruction_weight: 5.0 # 2.0
+line_ce_weight: 2.0             # 5.0
 
-box_reconstruction_weight: 15.0  #2.0
-box_angle_weight: 4.0
-box_ce_weight: 2.0   #5.0
+box_reconstruction_weight: 20.0 #15.0
+box_angle_weight: 4.0   # 0.0
+box_ce_weight: 4.0      # 5.0
 
 #ego_reconstruction_weight: 1.0
-kl_weight: 0.05 #0.1
+kl_weight: 0.1
 
 norm_by_count: False #True
 
