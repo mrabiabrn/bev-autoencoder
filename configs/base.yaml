@@ -20,11 +20,13 @@ vehicle_drop_rate: 0.3
 # === Log Parameters ===
 log_freq: 500
 
+predict_3d : true
+
 # === Training Related Parameters ===
 learning_rate: 0.0001 #5e-5 
 weight_decay: 0.0005
 dropout: false
-batch_size: 128            #256       #64*4
+batch_size: 256           
 gradient_acc_steps: 1
 num_epochs: 400    #200 #50
 seed: 3407
@@ -94,9 +96,9 @@ num_vehicle_queries: 50           #30
 line_reconstruction_weight: 5.0 # 2.0
 line_ce_weight: 2.0             # 5.0
 
-box_reconstruction_weight: 20.0 #15.0
+box_reconstruction_weight: 15.0 #15.0
 box_angle_weight: 4.0   # 0.0
-box_ce_weight: 4.0      # 5.0
+box_ce_weight: 2.0      # 5.0
 
 #ego_reconstruction_weight: 1.0
 kl_weight: 0.1

@@ -182,7 +182,7 @@ def visualize_vehicles(vehicle_vectors):
         #width, length = (vehicle_pred[-2:] * 0.5 + 0.5)
         #yaw = vehicle_pred[2] * np.pi
         width, length = (vehicle_pred[[3,4]] * 0.5 + 0.5) * 0.5
-        yaw = vehicle_pred[-1] * np.pi
+        yaw = vehicle_pred[2] * np.pi
 
         yaws.append(yaw)
 
@@ -308,10 +308,10 @@ def eval(model, val_dataloader):
             vehicle_pred_classes = out['vector']['VEHICLES']['mask'][0]
             vehicle_gts = batch['targets']['VEHICLES']['vector'][0]  
 
-            #mask = torch.sigmoid(vehicle_pred_classes) > 0.3
-            probs = torch.softmax(vehicle_pred_classes, dim=-1)
-            pred_classes = torch.argmax(probs, dim=-1)
-            mask = (pred_classes != 0)
+            mask = torch.sigmoid(vehicle_pred_classes) > 0.3
+            # probs = torch.softmax(vehicle_pred_classes, dim=-1)
+            # pred_classes = torch.argmax(probs, dim=-1)
+            # mask = (pred_classes != 0)
             vehicle_pred_vectors = vehicle_pred_vectors[mask]
             vehicles_pred_raster = visualize_vehicles(vehicle_pred_vectors)
             vehicles_gt_raster = visualize_vehicles(vehicle_gts)

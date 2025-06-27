@@ -34,8 +34,10 @@ class RVAEHungarianMatching(nn.Module):
         else:
             l1_cost = _get_box_l1_cost(gt_states, pred_states, gt_mask)
             ce_weight, reconstruction_weight = self._config.box_ce_weight, self._config.box_reconstruction_weight
-            gt_classes = targets[tgt_type]['class']
-            ce_cost = _get_ce_cost_multiclass(gt_classes, pred_logits)
+            # gt_classes = targets[tgt_type]['class']
+            # ce_cost = _get_ce_cost_multiclass(gt_classes, pred_logits)
+
+            ce_cost = _get_ce_cost(gt_mask, pred_logits)
         
         cost = ce_weight * ce_cost + reconstruction_weight * l1_cost
         cost = cost.cpu()  # NOTE: This unfortunately is the runtime bottleneck
@@ -120,8 +122,8 @@ def _get_box_l1_cost(gt_states: torch.Tensor, pred_states: torch.Tensor, gt_mask
     """
 
     # NOTE: Bounding Box L1 matching only considers position, ignoring irrelevant attr. (e.g. box extent)
-    gt_states_expanded = gt_states[:, :, None, [0, 1, 2]].detach()      # (b, ng, 1, 2)
-    pred_states_expanded = pred_states[:, None, :, [0, 1, 2]].detach()  # (b, 1, np, 2)
+    gt_states_expanded = gt_states[:, :, None, [0, 1]].detach()      # (b, ng, 1, 2)
+    pred_states_expanded = pred_states[:, None, :, [0, 1]].detach()  # (b, 1, np, 2)
     l1_cost = gt_mask[..., None] * (gt_states_expanded - pred_states_expanded).abs().sum(dim=-1)  # (b, ng, np)
     l1_cost = l1_cost.permute(0, 2, 1)  # (b, np, ng)
 

@@ -319,23 +319,13 @@ class NuscenesDataset(Dataset):
         city_name = self.city_names[idx] 
         city_token = 0 if city_name == 'boston' else 1
 
-        '''
-        if os.path.exists(cache_path):
-            data = np.load(cache_path)
-            map_vis = data['map_rgb']
-            vehicle_masks = data['vehicle_masks']
-            
-            map_vis = torch.from_numpy(map_vis)                 # 3, 400, 400
-            _, mH, mW = map_vis.shape
-            vehicle_masks = torch.from_numpy(vehicle_masks)     # 1, Z, X
-        '''
         # ============= Extract Vehicle Masks ===================
 
-        lrtlist_, boxlist_, vislist_, tidlist_, ptslist_, yawlist_, sizelist_, bbox2dlist_,  bbox3dlist_, velocities_, classes_ = self.get_lrtlist(sample)
-
+        lrtlist_, boxlist_, vislist_, tidlist_, ptslist_, yawlist_, sizelist_, bbox2dlist_,  bbox3dlist_, velocities_, classes_, bboxes_md, ptslistmd, yawlistmd = self.get_lrtlist(sample)
+        
         points = ptslist_  
         heading_angles = yawlist_
-        speeds = velocities_
+        # speeds = velocities_
 
         vehicles_raster = torch.zeros(2, self.final_dim[0], self.final_dim[1]).to(torch.float64)
         for i in range(len(points)):
@@ -344,7 +334,7 @@ class NuscenesDataset(Dataset):
             poly_mask = np.zeros((self.final_dim[0], self.final_dim[1]), dtype=np.uint8)
             cv2.fillPoly(poly_mask, [bbox], 1)
 
-            speed = speeds[i]
+            # speed = speeds[i]
             theta =  angle_diff(heading_angles[i] * np.pi ,  0, 2*np.pi) #(heading_angles[i] * np.pi + np.pi) #/ 2)   # 0, 2*pi
             u = torch.cos(theta.clone()).item()    # between -1 and 1
             v = torch.sin(theta.clone()).item()    # between -1 and 1
@@ -355,24 +345,14 @@ class NuscenesDataset(Dataset):
         color_mask = self.uv_to_color(vehicles_raster)                               # 3, Z, X
 
         # uv_mask --> between 0 and 1     (or -1 to 1)
-        #vehicles_raster = (vehicles_raster + 1) / 2             # 2, 256, 256
+        # vehicles_raster = (vehicles_raster + 1) / 2             # 2, 256, 256
 
-        vehicles_raster = vehicles_raster.permute(1,2,0)   # 256, 256, 2
+        vehicles_vector = torch.zeros(self.max_num_vehicles, bboxes_md.shape[1])   
+        vehicles_labels = torch.zeros(self.max_num_vehicles)
+        vehicles_classes = torch.zeros(self.max_num_vehicles) 
+        last_idx = min(len(bboxes_md), self.max_num_vehicles)
 
-        vehicles_vector = torch.zeros(self.max_num_vehicles, bbox3dlist_.shape[1])   # len(bbox2dlist_)
-        vehicles_labels = torch.zeros(self.max_num_vehicles) #len(bbox2dlist_))
-        vehicles_classes = torch.zeros(self.max_num_vehicles) #len(bbox2dlist_))
-        last_idx = min(len(bbox3dlist_), self.max_num_vehicles)
-        bbox3dlist_[:,:2] /= 64.0 # -1, 1
-        #bbox3dlist_[:,:2] = bbox3dlist_[:,:2] * 0.5 + 0.5  # 0, 1
-        # clamp it between -5 + 5
-        bbox3dlist_[:,2] = torch.clamp(bbox3dlist_[:,2], min = -8, max = 8) / 8.0
-        #bbox3dlist_[:,2] = bbox3dlist_[:,2] * 0.5 + 0.5    # 0, 1
-        #bbox2dlist_[:, :2] = (bbox2dlist_[:, :2] / self.final_dim[0]) * 2 - 1   # center x, center y
-        #bbox2dlist_[:, -2:] = bbox2dlist_[:, -2:] * 2 - 1                       # size x, size y
-        bbox3dlist_[:,3:6] = torch.clamp(bbox3dlist_[:,3:6], min = 0, max = 15.0) / 15.0  
-        bbox3dlist_[:,3:6] = bbox3dlist_[:,3:6] * 2 - 1
-        vehicles_vector[:last_idx] = (bbox3dlist_[:last_idx])
+        vehicles_vector[:last_idx] = (bboxes_md[:last_idx])
         vehicles_labels[:last_idx] = True
         vehicles_classes[:last_idx] = classes_[:last_idx].view(-1)
 
@@ -383,12 +363,26 @@ class NuscenesDataset(Dataset):
         rot = egopose['rotation']
         sample_token = sample['token']
 
-        map_name = self.lane_rasterizer.helper.get_map_name_from_sample_token(sample_token)
-
-        x, y = trans[:2]                                                                          # ego trans
-        yaw = quaternion_yaw(Quaternion(rot)) 
-        patchbox = get_patchbox(x, y, self.image_side_length)
+        lidar_token = sample['data']['LIDAR_TOP']
+        lidar_data = self.nusc.get('sample_data', lidar_token)
         
+        calibrated_sensor = self.nusc.get('calibrated_sensor', lidar_data['calibrated_sensor_token'])
+        sensor_translation = np.array(calibrated_sensor['translation'])
+        sensor_rotation = Quaternion(calibrated_sensor['rotation'])
+        
+        ego_pose = self.nusc.get('ego_pose', lidar_data['ego_pose_token'])
+        ego_translation = np.array(ego_pose['translation'])
+        ego_rotation = Quaternion(ego_pose['rotation'])
+        
+        sensor_global_rotation = ego_rotation * sensor_rotation 
+        sensor_global_translation = ego_rotation.rotate(sensor_translation) + ego_translation
+
+        map_name = self.lane_rasterizer.helper.get_map_name_from_sample_token(sample_token)
+        
+        x, y = sensor_global_translation[:2]                                                                          # ego trans
+        yaw = quaternion_yaw(sensor_global_rotation) + np.pi/2
+        patchbox = get_patchbox(x, y, self.image_side_length)
+
         images = []
         
         agent_x, agent_y = x, y  
@@ -603,123 +597,190 @@ class NuscenesDataset(Dataset):
         #print('EGO ', trans, 'rot' , egopose['rotation'])
         # in degrees
         ego_yaw_trans = Quaternion(egopose['rotation']).inverse.yaw_pitch_roll[0] * 180 / np.pi  
+
+        lidar_token = rec["data"]["LIDAR_TOP"]
+        lidar_path, boxes, _ = self.nusc.get_sample_data(lidar_token)
+
+        boxes_md = []
+        classes = []
+        ptslistmd = []
+        yawlistmd = []
+        for box in boxes:
+            if "vehicle" in box.name:
+                tok = box.token
+                inst = self.nusc.get('sample_annotation', tok)
+                if int(inst['visibility_token']) in [1, 2, 3]:  # invisible
+                    continue
+
+                box_center = box.center
+
+                if box_center[0] >= 64 or box_center[0] <= -64 or box_center[1] >= 64 or box_center[1] <= -64:
+                    continue
+
+                pts = box.bottom_corners()[:2].T    # Bottom corners. First two face forward, last two face backwards.
+                pts = np.round((pts - self.bx[:2] + self.dx[:2]/2.) / self.dx[:2]).astype(np.int32)
+                    
+                #pts[:, [1, 0]] = pts[:, [0, 1]]          # 4, 2 - switch x, y
+                #pts[:, 0] = self.X - 1 - pts[:, 0]       # horizontal flip
+                ptslistmd.append(torch.from_numpy(pts))
+
+                print("box center ", box_center)
+                    
+                pixel_center = np.array([(box_center[1]), (box_center[0])])  # 0, 256 
+
+                pixel_center = np.array([(pixel_center[1] * 2 + 128.), (pixel_center[0] * 2 + 128.)])  # 0, 256
+                pixel_center = (pixel_center / self.final_dim[0]) * 2 - 1
+
+                pixel_center_z = np.clip(box_center[2], -5.0, 5.0) / 5.0
+                # assert -1 <= pixel_center[0] <= 1 and -1 <= pixel_center[1] <= 1, f'Invalid pixel center: {pixel_center}'
+
+                size = box.wlh
+                print("box size ", size)
+                pixel_size = (np.clip(size[:3], 0, 15.0) / 15.0) * 2 - 1    # -1, 1
+                # assert -1 <= pixel_size[0] <= 1 and -1 <= pixel_size[1] <= 1, f'Invalid pixel size: {pixel_size}'
+            
+                rot2 = box.orientation.yaw_pitch_roll[0] - np.pi / 2        # this is in radians
+                # find the constant multiplyer of pi
+                # rot2 = (rot2 + np.pi) / (2 * np.pi)   # -1, 1
+                k = rot2 * 180 / np.pi  
+                if k < -180.0:
+                    k += 360
+                elif k > 180.0:
+                    k -= 360
+                k = k / 180.0 
+                assert -1 <= k <= 1, f'Invalid yaw: {k}'
+                yawlistmd.append(torch.tensor(k))
+                box_md = np.array([pixel_center[0], pixel_center[1], k, pixel_size[1], pixel_size[0], pixel_center_z, pixel_size[2]])
+                box_md = torch.from_numpy(box_md).float()
+                boxes_md.append(box_md)
+
+                # vehicle_class = '.'.join(inst['category_name'].split('.')[:2])
+                class_idx = 0
+                # self.vehicle_classes.index(vehicle_class)
+                classes.append(torch.Tensor([class_idx])) 
+                # print(box.name, box.center, box.wlh, -box.orientation.yaw_pitch_roll[0]- np.pi / 2)
+        boxes_md = torch.stack(boxes_md, dim=0) if len(boxes_md) > 0 else torch.zeros((0, 7))
+        ptslist =  torch.stack(ptslistmd, dim=0) if len(ptslistmd) > 0 else torch.zeros((0, 4, 2))
+        yawlist =  torch.stack(yawlistmd, dim=0) if len(yawlistmd) > 0 else torch.zeros((0))
+        classes = torch.stack(classes, dim=0) if len(classes) > 0 else torch.zeros((0))
+        
         
         lrtlist = []
         boxlist = []
         vislist = []
         tidlist = []
-        ptslist = []
-        yawlist = []
+        # ptslist = []
+        # yawlist = []
         sizelist = []
         bbox2dlist = []
         bbox3dlist = []
         velocities = []
-        classes = []
-        for tok in rec['anns']:
+        # classes = []
+        # for tok in rec['anns']:
             
-            inst = self.nusc.get('sample_annotation', tok)
-            # NuScenes filter
-            if ('vehicle' not in inst['category_name']): # or ('cycle' in inst['category_name']):
-                continue
+        #     inst = self.nusc.get('sample_annotation', tok)
+        #     # NuScenes filter
+        #     if ('vehicle' not in inst['category_name']): # or ('cycle' in inst['category_name']):
+        #         continue
             
-            if int(inst['visibility_token']) == 1:
-                continue
+        #     if int(inst['visibility_token']) == 1:
+        #         continue
 
-            # randomly drop some instances during training
-            if self.is_train and random.random() < self.vehicle_drop_rate:
-                continue
+        #     # randomly drop some instances during training
+        #     if self.is_train and random.random() < self.vehicle_drop_rate:
+        #         continue
 
-            box = Box(inst['translation'], inst['size'], Quaternion(inst['rotation']))
-            box.translate(trans)
-            box.rotate(rot)
+        #     box = Box(inst['translation'], inst['size'], Quaternion(inst['rotation']))
+        #     box.translate(trans)
+        #     box.rotate(rot)
             
-            pts = box.bottom_corners()[:2].T    # Bottom corners. First two face forward, last two face backwards.
-            pts = np.round((pts - self.bx[:2] + self.dx[:2]/2.) / self.dx[:2]).astype(np.int32)
+        #     pts = box.bottom_corners()[:2].T    # Bottom corners. First two face forward, last two face backwards.
+        #     pts = np.round((pts - self.bx[:2] + self.dx[:2]/2.) / self.dx[:2]).astype(np.int32)
             
-            pts[:, [1, 0]] = pts[:, [0, 1]]          # 4, 2 - switch x, y
-            pts[:, 0] = self.X - 1 - pts[:, 0]       # horizontal flip
+        #     pts[:, [1, 0]] = pts[:, [0, 1]]          # 4, 2 - switch x, y
+        #     pts[:, 0] = self.X - 1 - pts[:, 0]       # horizontal flip
             
-            if np.any(pts < 0) or np.any(pts > self.X):
-                continue
+        #     if np.any(pts < 0) or np.any(pts > self.X):
+        #         continue
             
-            # NOTE: invisibility not important for DETR
-            vislist.append(torch.tensor(1.0)) # visible
+        #     # NOTE: invisibility not important for DETR
+        #     vislist.append(torch.tensor(1.0)) # visible
             
-            center_pt = np.mean(pts,axis=0)  # 2
+        #     center_pt = np.mean(pts,axis=0)  # 2
             
-            ptslist.append(torch.from_numpy(pts))          
+        #     ptslist.append(torch.from_numpy(pts))          
 
-            r = box.rotation_matrix
-            t = box.center
-            l = box.wlh
-            l = np.stack([l[1],l[0],l[2]])
-            lrt = py.merge_lrt(l, py.merge_rt(r,t))
-            lrt = torch.Tensor(lrt)
-            lrtlist.append(lrt)
-            ry, _, _ = Quaternion(inst['rotation']).yaw_pitch_roll
-            rs = np.stack([ry*0, ry, ry*0])
-            box_ = torch.from_numpy(np.stack([t,l,rs])).reshape(9)
-            boxlist.append(box_)
+        #     r = box.rotation_matrix
+        #     t = box.center
+        #     l = box.wlh
+        #     l = np.stack([l[1],l[0],l[2]])
+        #     lrt = py.merge_lrt(l, py.merge_rt(r,t))
+        #     lrt = torch.Tensor(lrt)
+        #     lrtlist.append(lrt)
+        #     ry, _, _ = Quaternion(inst['rotation']).yaw_pitch_roll
+        #     rs = np.stack([ry*0, ry, ry*0])
+        #     box_ = torch.from_numpy(np.stack([t,l,rs])).reshape(9)
+        #     boxlist.append(box_)
             
-            yaw = (180 / np.pi * box_[7] + ego_yaw_trans) # + rotate_angle)   # yaw in degrees
-            if yaw < -180.0:
-                yaw += 360
-            elif yaw > 180.0:
-                yaw -= 360
-            yaw = yaw / 180.0  # normalized [-1, +1]. -1 --> front-right-back, +1 --> front-left-back
-            assert -1 <= yaw <= 1, f'Invalid yaw: {yaw}'
+        #     yaw = (180 / np.pi * box_[7] + ego_yaw_trans) # + rotate_angle)   # yaw in degrees
+        #     if yaw < -180.0:
+        #         yaw += 360
+        #     elif yaw > 180.0:
+        #         yaw -= 360
+        #     yaw = yaw / 180.0  # normalized [-1, +1]. -1 --> front-right-back, +1 --> front-left-back
+        #     assert -1 <= yaw <= 1, f'Invalid yaw: {yaw}'
 
-            yawlist.append(yaw)
+        #     yawlist.append(yaw)
             
-            size = torch.clamp(box_[3:6], min = 0, max = 15.0) / 15.0  # l, w, h
+        #     size = torch.clamp(box_[3:6], min = 0, max = 15.0) / 15.0  # l, w, h
 
-            velocity = self.nusc.box_velocity(tok)   # (vx ?, vy ?, vz)
-            velocities.append(torch.Tensor([np.sqrt(velocity[0]**2 + velocity[1]**2)]))
+        #     velocity = self.nusc.box_velocity(tok)   # (vx ?, vy ?, vz)
+        #     velocities.append(torch.Tensor([np.sqrt(velocity[0]**2 + velocity[1]**2)]))
 
-            vehicle_class = '.'.join(inst['category_name'].split('.')[:2])
-            class_idx = self.vehicle_classes.index(vehicle_class)
+        #     vehicle_class = '.'.join(inst['category_name'].split('.')[:2])
+        #     class_idx = self.vehicle_classes.index(vehicle_class)
             
-            # ['car', 'truck', 'construction_vehicle', 'bus', 
-            # 'trailer', 'barrier', 'motorcycle', 'bicycle', 
-            # 'pedestrian', 'traffic_cone']
+        #     # ['car', 'truck', 'construction_vehicle', 'bus', 
+        #     # 'trailer', 'barrier', 'motorcycle', 'bicycle', 
+        #     # 'pedestrian', 'traffic_cone']
 
-            #class_idx = 0
-            classes.append(torch.Tensor([class_idx + 1]))
-            # NOTE: for now class_idx is 0.
+        #     #class_idx = 0
+        #     classes.append(torch.Tensor([class_idx + 1]))
+        #     # NOTE: for now class_idx is 0.
             
-            bbox2d = torch.tensor([center_pt[0],center_pt[1],yaw,size[0],size[1]], dtype = torch.float32)
-            bbox2dlist.append(bbox2d)
+        #     bbox2d = torch.tensor([center_pt[0],center_pt[1],yaw,size[0],size[1]], dtype = torch.float32)
+        #     bbox2dlist.append(bbox2d)
 
-            bbox3d = torch.zeros(7)
-            bbox3d[:-1] = box_[:6]
-            bbox3d[-1] = yaw
-            bbox3d[[0,1]] = bbox3d[[1,0]] 
-            bbox3d[0] = (-1) * bbox3d[0]    
-            bbox3dlist.append(bbox3d)
+        #     bbox3d = torch.zeros(7)
+        #     bbox3d[:-1] = box_[:6]
+        #     bbox3d[-1] = yaw
+        #     bbox3d[[0,1]] = bbox3d[[1,0]] 
+        #     bbox3d[0] = (-1) * bbox3d[0]    
+        #     bbox3dlist.append(bbox3d)
 
             
-        if len(ptslist):
-            vislist = torch.stack(vislist, dim=0)
-            ptslist = torch.stack(ptslist, dim=0)
-            yawlist = torch.stack(yawlist, dim=0)
-            velocities = torch.stack(velocities, dim=0)
-            classes = torch.stack(classes, dim=0)
-            # sizelist = torch.stack(sizelist, dim=0)
-            bbox2dlist = torch.stack(bbox2dlist, dim=0)
-            bbox3dlist = torch.stack(bbox3dlist, dim=0)
-            # tidlist = torch.stack(tidlist, dim=0)
-        else:
-            lrtlist = torch.zeros((0, 19))
-            boxlist = torch.zeros((0, 9))
-            vislist = torch.zeros((0))
-            ptslist = torch.zeros((0, 4, 2))
-            yawlist = torch.zeros((0))
-            sizelist = torch.zeros((0, 2))
-            bbox2dlist = torch.zeros((0, 5))
-            bbox3dlist = torch.zeros((0, 7))
-            velocities =  torch.zeros((0))
-            classes =  torch.zeros((0))
-            # tidlist = torch.zeros((0))
+        # if len(ptslist):
+        #     vislist = torch.stack(vislist, dim=0)
+        #     ptslist = torch.stack(ptslist, dim=0)
+        #     yawlist = torch.stack(yawlist, dim=0)
+        #     velocities = torch.stack(velocities, dim=0)
+        #     classes = torch.stack(classes, dim=0)
+        #     # sizelist = torch.stack(sizelist, dim=0)
+        #     bbox2dlist = torch.stack(bbox2dlist, dim=0)
+        #     bbox3dlist = torch.stack(bbox3dlist, dim=0)
+        #     # tidlist = torch.stack(tidlist, dim=0)
+        # else:
+        #     lrtlist = torch.zeros((0, 19))
+        #     boxlist = torch.zeros((0, 9))
+        #     vislist = torch.zeros((0))
+        #     ptslist = torch.zeros((0, 4, 2))
+        #     yawlist = torch.zeros((0))
+        #     sizelist = torch.zeros((0, 2))
+        #     bbox2dlist = torch.zeros((0, 5))
+        #     bbox3dlist = torch.zeros((0, 7))
+        #     velocities =  torch.zeros((0))
+        #     classes =  torch.zeros((0))
+        #     # tidlist = torch.zeros((0))
 
         return lrtlist, boxlist, vislist, tidlist, ptslist, yawlist, sizelist, bbox2dlist, bbox3dlist, velocities, classes
     

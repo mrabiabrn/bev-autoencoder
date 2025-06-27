@@ -23,8 +23,9 @@ def get_run_name(args):
     res = str(args.bev_resolution)
 
     vehicle_drop = str(args.vehicle_drop_rate)
+    predict_3d = str(args.predict_3d)
 
-    run_name = res + '_lr' + str(args.learning_rate) + '_bs' + str(args.batch_size) + '_steps' + num_steps + '_line' + line_reconstruction_weight + '_box' + box_reconstruction_weight + '_linece' + line_ce_weight + '_boxce' + box_ce_weight + 'angle' + box_angle_weight + '_vehicledrop' + vehicle_drop + '_3d_classes'
+    run_name = res + '_lr' + str(args.learning_rate) + '_bs' + str(args.batch_size) + '_steps' + num_steps + '_line' + line_reconstruction_weight + '_box' + box_reconstruction_weight + '_linece' + line_ce_weight + '_boxce' + box_ce_weight + 'angle' + box_angle_weight + '_vehicledrop' + vehicle_drop + '_3d:' + predict_3d
     return run_name
 
 
