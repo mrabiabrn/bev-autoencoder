@@ -24,8 +24,9 @@ def get_run_name(args):
 
     vehicle_drop = str(args.vehicle_drop_rate)
     predict_3d = str(args.predict_3d)
+    multiclass = str(args.multiclass)
 
-    run_name = res + '_lr' + str(args.learning_rate) + '_bs' + str(args.batch_size) + '_steps' + num_steps + '_line' + line_reconstruction_weight + '_box' + box_reconstruction_weight + '_linece' + line_ce_weight + '_boxce' + box_ce_weight + 'angle' + box_angle_weight + '_vehicledrop' + vehicle_drop + '_3d:' + predict_3d
+    run_name = res + '_lr' + str(args.learning_rate) + '_bs' + str(args.batch_size) + '_steps' + num_steps + '_line' + line_reconstruction_weight + '_box' + box_reconstruction_weight + '_linece' + line_ce_weight + '_boxce' + box_ce_weight + 'angle' + box_angle_weight + '_vehicledrop' + vehicle_drop + '_3d:' + predict_3d + '_multiclass:' + multiclass + '_div'
     return run_name
 
 
@@ -158,6 +159,9 @@ def rvae_collate_fn(batch):
     vehicles_mask_list = []
     vehicles_classes_list = []
 
+    lane_divider_list = []
+    lane_divider_mask_list = []
+
     # 1. Collect all data from the batch
     for item in batch:
         features_list.append(item['features'])  # shape (Z, X, 4)
@@ -171,6 +175,9 @@ def rvae_collate_fn(batch):
         vehicles_mask_list.append(item['targets']['VEHICLES']['mask'])
         vehicles_classes_list.append(item['targets']['VEHICLES']['class'])
 
+        lane_divider_list.append(item['targets']['LANE_DIVIDERS']['vector'])  # shape (L, 10, 2)?
+        lane_divider_mask_list.append(item['targets']['LANE_DIVIDERS']['mask'])
+
     features_batch = torch.stack(features_list, dim=0)  # (B, Z, X, 4) 
     color_mask_batch = torch.stack(color_mask_list, dim=0)  # (B, 3, X)
     lane_vector_batch = torch.stack(lane_vector_list, dim=0)        # (B, L, 20, 2)
@@ -180,6 +187,9 @@ def rvae_collate_fn(batch):
     vehicles_mask_batch = torch.stack(vehicles_mask_list, dim=0)       # e.g. (B, V)
     vehicles_classes_batch = torch.stack(vehicles_classes_list, dim=0)  # (B, V)
 
+    lane_divider_batch = torch.stack(lane_divider_list, dim=0)          # (B, L, 10, 2)
+    lane_divider_mask_batch = torch.stack(lane_divider_mask_list, dim=0)  # e.g. (B, L)
+
     collated_batch = {
         'features': features_batch,               # (B, Z, X, 4)
         'color_mask': color_mask_batch,           # (B, 3, X)
@@ -187,6 +197,10 @@ def rvae_collate_fn(batch):
             'LANES': {
                 'vector': lane_vector_batch,      # (B, L, 20, 2)
                 'mask': lane_mask_batch
+            },
+            'LANE_DIVIDERS': {
+                'vector': lane_divider_batch,    # (B, L, 10, 2)
+                'mask': lane_divider_mask_batch
             },
             'VEHICLES': {
                 'vector': vehicles_vector_batch,  # (B, V, 5)

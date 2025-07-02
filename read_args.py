@@ -41,6 +41,7 @@ def set_args(cfg):
 
     cfg.num_queries_list = [
         cfg.num_line_queries,
+        cfg.num_lane_dividers,
         cfg.num_vehicle_queries,
         # cfg.num_pedestrian_queries,
         # cfg.num_static_object_queries,

@@ -19,7 +19,7 @@ class RVAEHungarianObjective(nn.Module):
         pred_states = predictions[tgt_type]['vector']  # B, Q, D
         pred_logits = predictions[tgt_type]['mask']    # B, Q
         gt_states = targets[tgt_type]['vector']        # B, MAX, D 
-        if tgt_type == 'VEHICLES':
+        if tgt_type == 'VEHICLES' and self._config.multiclass:
             gt_mask = targets[tgt_type]['class']           # B, C
         else:
             gt_mask = targets[tgt_type]['mask']            # B, 1
@@ -36,34 +36,35 @@ class RVAEHungarianObjective(nn.Module):
         gt_mask_idx = torch.cat([t[i] for t, (_, i) in zip(gt_mask, indices)], dim=0).float()   
 
         # calculate CE and L1 Loss
-        if tgt_type == 'LANES':
+        if tgt_type in ['LANES', 'LANE_DIVIDERS']:
             l1_loss = F.l1_loss(pred_states_idx, gt_states_idx, reduction="none")       # B * num_queries, D
             l1_loss = l1_loss.sum(-1).mean(-1) * gt_mask_idx
-            ce_weight, reconstruction_weight = self._config.line_ce_weight, self._config.line_reconstruction_weight
+            ce_weight, reconstruction_weight = self._config.line_ce_weight, self._config.line_reconstruction_weight       
             ce_loss = F.binary_cross_entropy_with_logits(pred_logits_idx, gt_mask_idx, reduction="none")
         else:
-            #l1_loss = F.l1_loss(pred_states_idx[:,[0,1,3,4]], gt_states_idx[:,[0,1,3,4]], reduction="none")       # B * num_queries, D
-            #l1_loss = l1_loss * torch.tensor([1, 1, 0.25, 0.25]).to(l1_loss.device)
-            l1_loss = F.l1_loss(pred_states_idx[:,:-1], gt_states_idx[:,:-1], reduction="none")       # B * num_queries, D
-            l1_loss = l1_loss * torch.tensor([1, 1, 1, 0.25, 0.25, 0.25]).to(l1_loss.device)
+            if self._config.predict_3d:
+                l1_loss = F.l1_loss(pred_states_idx[:,[0, 1, 3, 4, 5, 6]], gt_states_idx[:,[0, 1, 3, 4, 5, 6]], reduction="none")       # B * num_queries, D
+                l1_loss = l1_loss * torch.tensor([1, 1, 0.25, 0.25, 0.5, 0.25]).to(l1_loss.device)
+            else:
+                l1_loss = F.l1_loss(pred_states_idx[:,[0, 1, 3, 4]], gt_states_idx[:,[0, 1, 3, 4]], reduction="none")
+                l1_loss = l1_loss * torch.tensor([1, 1, 0.25, 0.25]).to(l1_loss.device)   # B * num_queries, D
             l1_loss = l1_loss.sum(-1) * gt_mask_idx         
+
             ce_weight, reconstruction_weight = self._config.box_ce_weight, self._config.box_reconstruction_weight
 
-            pred_angle_in_rad = pred_states_idx[:,-1] * torch.pi    # -pi  to pi     B * num_queries
-            target_angle_in_rad = gt_states_idx[:,-1] * torch.pi    # -pi to pi      B * num_queries
-            diff_angle = pred_angle_in_rad - target_angle_in_rad    # -2pi to 2pi
+            angle_idx = 2
+            pred_angle_in_rad = pred_states_idx[:,angle_idx] * torch.pi     # -pi  to pi     B * num_queries
+            target_angle_in_rad = gt_states_idx[:,angle_idx] * torch.pi     # -pi to pi      B * num_queries
+            diff_angle = pred_angle_in_rad - target_angle_in_rad            # -2pi to 2pi
             angle_error = - torch.pi + torch.fmod(diff_angle + torch.pi, 2 * torch.pi)  
             loss_angle = F.l1_loss(angle_error, torch.zeros_like(angle_error), reduction='none')     # B * num_queries
             loss_angle = loss_angle * gt_mask_idx
             angle_weight = self._config.box_angle_weight
-            ce_loss = F.cross_entropy(pred_logits_idx, gt_mask_idx.long(), reduction="none")   # B * num_queries, C
-            # loss_giou = 1 - torch.diag(generalized_box_iou(
-            #                                                 box_cxcywh_to_xyxy(pred_states_idx[:,[0,1,3,4]]),
-            #                                                 box_cxcywh_to_xyxy(gt_states_idx[:,[0,1,3,4]])
-            #                                                 ))     
-            # loss_giou = loss_giou.sum(-1) * gt_mask_idx     # 
-            
 
+            if self._config.multiclass:
+                ce_loss = F.cross_entropy(pred_logits_idx, gt_mask_idx.long(), reduction="none")
+            else:
+                ce_loss = F.binary_cross_entropy_with_logits(pred_logits_idx, gt_mask_idx, reduction="none")
 
         # Whether to average by batch size or entity count
         bs = gt_mask.shape[0]
@@ -79,8 +80,7 @@ class RVAEHungarianObjective(nn.Module):
             ce_loss = ce_loss.view(bs, -1).mean()
             if tgt_type == 'VEHICLES':
                 loss_angle = loss_angle.view(bs, -1).mean()
-        
-
+    
         tgt_type = tgt_type.lower()
         out = {
                 f"l1_{tgt_type}": reconstruction_weight * l1_loss, 

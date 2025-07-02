@@ -5,7 +5,7 @@ from enum import Enum
 class AgentIndex(Enum):
     _X = 0
     _Y = 1
-    _Z = 2
+    _YAW = 2
     _WIDTH = 3
     _LENGTH = 4
     _Z = 5

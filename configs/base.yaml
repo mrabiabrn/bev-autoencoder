@@ -21,6 +21,7 @@ vehicle_drop_rate: 0.3
 log_freq: 500
 
 predict_3d : true
+multiclass: true
 
 # === Training Related Parameters ===
 learning_rate: 0.0001 #5e-5 
@@ -46,10 +47,11 @@ pose_interval: 1.0
 # 2. features raster & vector
 frame: [128, 128]       #[64, 64]
 
-target_types: ['LANES', 'VEHICLES'] 
+target_types: ['LANES', 'VEHICLES', 'LANE_DIVIDERS'] 
 
 num_lines: 50           #30
 num_vehicles: 50
+num_lane_dividers: 50
 # num_pedestrians: 20
 # num_static_objects: 30
 # num_green_lights: 20
@@ -65,7 +67,7 @@ line_dots_radius: 0
 # 3. raster encoder π
 backbone: "resnet50"
 down_factor: 32  # NOTE: specific to resnet
-num_input_channels: 4
+num_input_channels: 6 #4
 latent_channel: 64
 
 # 4. vector decoder φ

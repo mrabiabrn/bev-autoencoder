@@ -48,6 +48,13 @@ class RVAEDecoder(nn.Module):
             num_line_poses=config.num_line_poses,
             frame=config.frame,
         )
+        self._line_head_div = LineHead(
+            d_input=config.d_model,
+            d_ffn=config.head_d_ffn,
+            num_layers=config.head_num_layers,
+            num_line_poses=10, #config.num_line_poses,
+            frame=config.frame,
+        )
         self._vehicle_head = BoundingBoxHead(
             d_input=config.d_model,
             d_ffn=config.head_d_ffn,
@@ -55,6 +62,7 @@ class RVAEDecoder(nn.Module):
             frame=config.frame,
             enum=AgentIndex,
             max_velocity=config.vehicle_max_velocity,
+            multi_class=config.multiclass,
         )
         # self._pedestrian_head = BoundingBoxHead(
         #     d_input=config.d_model,
@@ -101,7 +109,8 @@ class RVAEDecoder(nn.Module):
         :param latent: tensor of latent variable (after reparameterization)
         :return: sledge vector dataclass
         """
-        b, device = latent.shape[0], latent.device
+        b, device = latent.shape[0], latent.device   # (b, d_model, h, w)
+
         if self._config.split_latent:
             static_latent, dynamic_latent = torch.chunk(latent, 2, dim=1)
 
@@ -114,8 +123,8 @@ class RVAEDecoder(nn.Module):
             decoder_mask = create_mask(
                 num_patches,
                 num_patches,
-                sum(self._num_queries_list[:1]),
-                sum(self._num_queries_list[1:]),
+                sum(self._num_queries_list[:2]),  # TODO: lane queries
+                sum(self._num_queries_list[2:]),
                 device,
             )
 
@@ -142,21 +151,27 @@ class RVAEDecoder(nn.Module):
             pos_embed = self._position_encoding(static_patches)     # (b, d_model, p, p)
             pos_embed = pos_embed.flatten(-2).permute(2, 0, 1)      # (p*p, b, d_model)
 
-        query_embed = self._query_embedding.weight[:, None].repeat(1, b, 1)
+        query_embed = self._query_embedding.weight[:, None].repeat(1, b, 1)  # (num_queries, b, d_model)
 
+        # print("decoder mask shape:", decoder_mask.shape if decoder_mask is not None else "None")
+        # print("projected patches shape:", projected_patches.shape)
+        # print("query embed shape:", query_embed.shape)
+        # print("pos embed shape:", pos_embed.shape)
+        # print("num queries list:", self._num_queries_list)
         hs = self._transformer(
             src=projected_patches,
-            query_embed=query_embed,
+            query_embed=query_embed,                
             pos_embed=pos_embed,
             memory_mask=decoder_mask,
         )[0].permute(1, 0, 2)
 
-        hs_line, hs_vehicle = hs.split(           # hs_pedestrian, hs_static, hs_green, hs_red, hs_ego 
+        hs_line, hs_div, hs_vehicle = hs.split(           # hs_pedestrian, hs_static, hs_green, hs_red, hs_ego 
             self._num_queries_list, dim=1
         )
         # hs_line --> (b, num_line_queries, d_model)
         line_element = self._line_head(hs_line)
         vehicle_element = self._vehicle_head(hs_vehicle)
+        div_element = self._line_head_div(hs_div)
         # pedestrian_element = self._pedestrian_head(hs_pedestrian)
         # static_object_element = self._static_object_head(hs_static)
         # green_line_element = self._green_line_head(hs_green)
@@ -168,6 +183,11 @@ class RVAEDecoder(nn.Module):
                         {
                             'vector': line_element[0],
                             'mask': line_element[1],
+                        },
+                    'LANE_DIVIDERS':
+                        {
+                            'vector': div_element[0],
+                            'mask': div_element[1],
                         },
                     'VEHICLES': 
                         {
@@ -269,6 +289,7 @@ class BoundingBoxHead(nn.Module):
         frame: Tuple[float, float],
         enum: Enum,
         max_velocity: Optional[float] = None,
+        multi_class: bool = False,
     ):
         """
         Initialize bounding box head.
@@ -285,7 +306,10 @@ class BoundingBoxHead(nn.Module):
         #    assert max_velocity is not None
 
         self._ffn_states = FFN(d_input, d_ffn, len(enum), num_layers)
-        self._ffn_mask = nn.Linear(d_input, 1)  # including null class
+        num_classes = 9 if multi_class else 1
+        self._ffn_mask = nn.Linear(d_input, num_classes)  # including null class
+
+        self.multiclass = multi_class
 
         self._enum = enum
         self._max_velocity = max_velocity
@@ -307,7 +331,10 @@ class BoundingBoxHead(nn.Module):
         if self._max_velocity is not None:
             states[..., -1] = states[..., -1].sigmoid() * self._max_velocity
 
-        mask = self._ffn_mask(queries).squeeze(dim=-1)    # B, Q, 9
+        if self.multiclass:
+            mask = self._ffn_mask(queries)  # B, Q, C
+        else:
+            mask = self._ffn_mask(queries).squeeze(dim=-1)
         return (states, mask)
 
 

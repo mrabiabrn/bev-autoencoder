@@ -287,6 +287,9 @@ class NuscenesDataset(Dataset):
         self.max_num_vehicles = args.num_vehicles
         self.max_num_lines = args.num_lines
         self.vehicle_drop_rate = args.vehicle_drop_rate
+
+
+        self.multiclass = args.multiclass
         
 
     
@@ -321,7 +324,7 @@ class NuscenesDataset(Dataset):
 
         # ============= Extract Vehicle Masks ===================
 
-        lrtlist_, boxlist_, vislist_, tidlist_, ptslist_, yawlist_, sizelist_, bbox2dlist_,  bbox3dlist_, velocities_, classes_, bboxes_md, ptslistmd, yawlistmd = self.get_lrtlist(sample)
+        lrtlist_, boxlist_, vislist_, tidlist_, ptslist_, yawlist_, sizelist_, bbox2dlist_,  bbox3dlist_, velocities_, classes_, bboxes_md = self.get_lrtlist(sample)
         
         points = ptslist_  
         heading_angles = yawlist_
@@ -343,6 +346,7 @@ class NuscenesDataset(Dataset):
             vehicles_raster[1][poly_mask == 1] = -v 
         
         color_mask = self.uv_to_color(vehicles_raster)                               # 3, Z, X
+        vehicles_raster = vehicles_raster.permute(1, 2, 0)                           # Z, X, 2
 
         # uv_mask --> between 0 and 1     (or -1 to 1)
         # vehicles_raster = (vehicles_raster + 1) / 2             # 2, 256, 256
@@ -406,6 +410,94 @@ class NuscenesDataset(Dataset):
         rotation_mat = get_rotation_matrix(base_image.shape, agent_yaw)
         lanes_eliminated = []
         mask = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 1))
+
+        lane_tokens = map_api.get_records_in_radius(agent_x, agent_y, radius, ['lane'])['lane']
+        # divider_mask = np.full((256, 256, 3), 255.) # np.full((256, 256, 3), 255.)
+
+        lane_dividers_raster = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 2))
+        lane_dividers_in_frame = []
+        lane_dividers_eliminated = []
+        for lane_token in lane_tokens:
+            
+            lane_metadata = [record for record in map_api.lane if record['token'] == lane_token][0]
+
+            cur_poses_along_lane = map_api.get_arcline_path(lane_token)
+
+            for side in ['left_lane_divider_segment_nodes', 'right_lane_divider_segment_nodes']:
+                lane_dividers_eliminated.append([])
+                segment_nodes = lane_metadata.get(side, [])
+                if len(segment_nodes) < 2:
+                    continue
+
+                lane_start_poses = np.array([pose['start_pose'] for pose in cur_poses_along_lane] + [pose['end_pose'] for pose in cur_poses_along_lane])
+                lane_start_xy = lane_start_poses[:, :2] 
+                lane_start_yaws = lane_start_poses[:, 2] 
+
+                divider_coords = [(node['x'], node['y']) for node in segment_nodes]
+        
+                for i in range(0, len(divider_coords)-1):
+                    start = divider_coords[i]
+                    end = divider_coords[i + 1]
+
+                    dists = np.linalg.norm(lane_start_xy - start, axis=1)
+                    closest_idx = np.argmin(dists)
+                    closest_yaw = lane_start_yaws[closest_idx]
+                    yaw = closest_yaw
+
+                    #dx = end[0] - start[0]
+                    #dy = (end[1]) - (start[1])
+                    #yaw = np.arctan2(dx, dy)
+        
+                    start_pixel = convert_to_pixel_coords(start, agent_global_coords, agent_pixels, resolution)
+                    end_pixel   = convert_to_pixel_coords(end, agent_global_coords, agent_pixels, resolution)
+        
+                    start_pixels = (start_pixel[1], start_pixel[0])
+                    end_pixels   = (end_pixel[1], end_pixel[0])
+                    
+                    start_pixels = rotate_points_2d(np.array([start_pixels]), rotation_mat)[0].astype(int)
+                    end_pixels   = rotate_points_2d(np.array([end_pixels]), rotation_mat)[0].astype(int)
+
+                    angle = angle_diff(agent_yaw_in_radians,  yaw, 2*np.pi) + np.pi # [-pi, +pi] + pi --> [0, 2*pi]
+                    u = np.cos(angle)    # -1, 1
+                    v = np.sin(angle)    # -1, 1
+
+                    if start_pixels[0] >= self.image_side_length_pixels or start_pixels[0] < 0 or start_pixels[1] >= self.image_side_length_pixels or start_pixels[1] < 0:
+                        continue
+
+                    lane_dividers_raster[start_pixels[1], start_pixels[0]] = np.array([u, v])   
+                    # lane_dividers_raster[end_pixel[1], end_pixel[0]] = np.array([u, v])
+
+                    start_pixels = tuple(start_pixels.astype(int))
+                    lane_dividers_eliminated[-1].append(start_pixels)
+
+                    # color = color_function(agent_yaw_in_radians, yaw)  
+                    # cv2.line(divider_mask, start_pixels, end_pixels, color, thickness=2)
+
+                if end_pixels[0] < self.image_side_length_pixels and end_pixels[0] >= 0 and end_pixels[1] < self.image_side_length_pixels and end_pixels[1] >= 0:
+                    lane_dividers_eliminated[-1].append(end_pixels)
+
+                cur_lane_div = lane_dividers_eliminated[-1]
+                if len(cur_lane_div) < 2:
+                    for pixel in cur_lane_div: 
+                        lane_dividers_raster[pixel[1], pixel[0]][0] = 0 
+                        lane_dividers_raster[pixel[1], pixel[0]][1] = 0 
+                    continue
+                lane_dividers_in_frame.append(cur_lane_div)
+        
+        lane_dividers_raster = torch.from_numpy(lane_dividers_raster)  
+
+        lane_dividers_vector = torch.zeros(self.max_num_lines, 10, 2)  
+        lane_divider_labels = torch.zeros(self.max_num_lines)
+        
+        for lane_idx, lane in enumerate(lane_dividers_in_frame):
+            if lane_idx >= self.max_num_lines:
+                break
+            lane_pts_sampled = resample_lane_pts(lane, num_samples=10)
+            lane_dividers_vector[lane_idx] = (torch.from_numpy(lane_pts_sampled) / self.final_dim[0]) * 2 - 1
+
+        last_idx = min(len(lane_dividers_in_frame), self.max_num_lines)
+        lane_divider_labels[: last_idx] = True
+
         
         num_line_poses = 20
         lanes_raster = np.zeros((self.image_side_length_pixels, self.image_side_length_pixels, 2))
@@ -469,18 +561,25 @@ class NuscenesDataset(Dataset):
         last_idx = min(len(lanes_in_frame), self.max_num_lines)
         lanes_labels[: last_idx] = True
 
-        raster = torch.zeros(256, 256, 4)
+        raster = torch.zeros(256, 256, 6)
         raster[..., :2] = lanes_raster
-        raster[..., 2:] = vehicles_raster
+        raster[..., 2:4] = vehicles_raster
+        raster[..., 4:] = lane_dividers_raster
 
         target = {
             'features': raster.permute(2,0,1),                  # Z, X, 4
-            # 'city_token': city_token,            # 1
+            'city_token': city_token,            # 1
             'color_mask' : color_mask,
             'targets':{
                         'LANES': {
                                     'vector': lanes_vector,    # L, 20 ,2 
                                     'mask' : lanes_labels
+                        },
+                        'LANE_DIVIDERS' :
+                        {
+                            'vector': lane_dividers_vector,    # L, 10 ,2 
+                            'mask' : lane_divider_labels
+                            
                         },
                         'VEHICLES': {
                                     'vector': vehicles_vector,  # V, 5
@@ -620,12 +719,8 @@ class NuscenesDataset(Dataset):
                 pts = box.bottom_corners()[:2].T    # Bottom corners. First two face forward, last two face backwards.
                 pts = np.round((pts - self.bx[:2] + self.dx[:2]/2.) / self.dx[:2]).astype(np.int32)
                     
-                #pts[:, [1, 0]] = pts[:, [0, 1]]          # 4, 2 - switch x, y
-                #pts[:, 0] = self.X - 1 - pts[:, 0]       # horizontal flip
                 ptslistmd.append(torch.from_numpy(pts))
 
-                print("box center ", box_center)
-                    
                 pixel_center = np.array([(box_center[1]), (box_center[0])])  # 0, 256 
 
                 pixel_center = np.array([(pixel_center[1] * 2 + 128.), (pixel_center[0] * 2 + 128.)])  # 0, 256
@@ -635,7 +730,6 @@ class NuscenesDataset(Dataset):
                 # assert -1 <= pixel_center[0] <= 1 and -1 <= pixel_center[1] <= 1, f'Invalid pixel center: {pixel_center}'
 
                 size = box.wlh
-                print("box size ", size)
                 pixel_size = (np.clip(size[:3], 0, 15.0) / 15.0) * 2 - 1    # -1, 1
                 # assert -1 <= pixel_size[0] <= 1 and -1 <= pixel_size[1] <= 1, f'Invalid pixel size: {pixel_size}'
             
@@ -654,8 +748,11 @@ class NuscenesDataset(Dataset):
                 box_md = torch.from_numpy(box_md).float()
                 boxes_md.append(box_md)
 
-                # vehicle_class = '.'.join(inst['category_name'].split('.')[:2])
-                class_idx = 0
+                if self.multiclass:
+                    vehicle_class = '.'.join(inst['category_name'].split('.')[:2])
+                    class_idx = self.vehicle_classes.index(vehicle_class) + 1
+                else:
+                    class_idx = 0
                 # self.vehicle_classes.index(vehicle_class)
                 classes.append(torch.Tensor([class_idx])) 
                 # print(box.name, box.center, box.wlh, -box.orientation.yaw_pitch_roll[0]- np.pi / 2)
@@ -782,9 +879,8 @@ class NuscenesDataset(Dataset):
         #     classes =  torch.zeros((0))
         #     # tidlist = torch.zeros((0))
 
-        return lrtlist, boxlist, vislist, tidlist, ptslist, yawlist, sizelist, bbox2dlist, bbox3dlist, velocities, classes
-    
-
+        return lrtlist, boxlist, vislist, tidlist, ptslist, yawlist, sizelist, bbox2dlist, bbox3dlist, velocities, classes, boxes_md
+           
     
     def get_seg_bev(self, pts_list):
         

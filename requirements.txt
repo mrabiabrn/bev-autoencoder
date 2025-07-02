@@ -1,0 +1,39 @@
+nuscenes-devkit
+
+# hugging face
+accelerate==0.33.0
+datasets==2.20.0
+transformers==4.43.3
+dataset==1.6.2
+diffusers==0.29.2
+timm==1.0.8
+
+# nuplan requirements
+# hydra-core==1.1.0rc1  
+# joblib
+matplotlib  
+# nest_asyncio  
+numpy==1.23.4
+opencv-python==4.9.0.80  
+pandas    
+Pillow   
+# psutil  
+# pyarrow 
+# pyinstrument 
+# pyogrio 
+pyquaternion>=0.9.5 
+# pytest    
+# rasterio  
+# ray 
+# retry
+# rtree 
+scipy  
+# selenium 
+setuptools==65.5.1
+Shapely>=2.0.0
+# SQLAlchemy==1.4.27  
+# sympy  
+# tornado 
+tqdm  
+# ujson  
+notebook==7.2.1

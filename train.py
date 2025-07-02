@@ -40,7 +40,7 @@ def train_epoch(args, model, optimizer, scheduler, train_dataloader, val_dataloa
         if (i) % args.gradient_acc_steps == 0:
 
             batch['features'] = batch['features'].cuda()
-            for tgt_type in ['VEHICLES', 'LANES']:
+            for tgt_type in ['VEHICLES', 'LANES', 'LANE_DIVIDERS']:
                 for k in ['vector', 'mask']:  
                     batch['targets'][tgt_type][k] = batch['targets'][tgt_type][k].clone().cuda() 
 
@@ -87,11 +87,11 @@ def train_epoch(args, model, optimizer, scheduler, train_dataloader, val_dataloa
                     #     logs[f"train/{k}"] = v
 
                     if args.evaluate_all_val:
-                        val_logs, val_loss = eval(model, val_dataloader)
+                        val_logs, val_loss = eval(args, model, val_dataloader)
                         
                     else:
                         val_subset_loader = utils.get_random_subset_dataloader(val_dataloader.dataset, n=1000)
-                        val_logs, val_loss = eval(model, val_subset_loader)
+                        val_logs, val_loss = eval(args, model, val_subset_loader)
 
                     for k, v in val_logs.items():
                         logs[f"val/{k}"] = v
@@ -118,7 +118,7 @@ def train_epoch(args, model, optimizer, scheduler, train_dataloader, val_dataloa
         else:
             with model.no_sync():
                 batch['features'] = batch['features'].cuda()
-                for tgt_type in ['VEHICLES', 'LANES']:
+                for tgt_type in ['VEHICLES', 'LANES', 'LANE_DIVIDERS']:
                     for k in ['vector', 'mask']:  
                         batch['targets'][tgt_type][k] = batch['targets'][tgt_type][k].clone().cuda() 
 
@@ -269,9 +269,66 @@ def visualize_lanes(lane_vectors):
     return image.astype('uint8')
 
 
+def visualize_lane_dividers(lane_vectors, lane_dividers):
+    
+    image = np.full((256, 256, 3), 255.)
+
+    lanes = (lane_vectors) 
+    lane_divs = (lane_dividers)
+    color_function=color_by_yaw
+
+    divider_info = []
+    lanes_xy = []
+    lane_yaws = []
+    
+    for poses_along_lane in lanes:  
+        
+        for start_pose, end_pose in zip(poses_along_lane[:-1], poses_along_lane[1:]):
+            
+            start_pixels = start_pose.detach().cpu()
+            end_pixels = end_pose.detach().cpu()    
+
+            dx = end_pixels[0] - start_pixels[0]
+            dy = (end_pixels[1]) - (start_pixels[1])
+            angle_radians = torch.atan2(dx, dy)
+            
+            lanes_xy.append(start_pixels.numpy())
+            lane_yaws.append(angle_radians)
+    
+    lanes_xy = np.array(lanes_xy)
+    lane_yaws = np.array(lane_yaws)   
+
+    for lane_div in lane_divs: 
+        for i , (start_pose, end_pose) in enumerate(zip(lane_div[:-1], lane_div[1:])):
+            
+            start_pixels = start_pose.detach().cpu() 
+            end_pixels = end_pose.detach().cpu()     
+    
+            dists = np.linalg.norm(lanes_xy - np.array(start_pixels), axis=1)
+            closest_idx = np.argmin(dists)
+            yaw = lane_yaws[closest_idx]
+    
+            start_pixels = (start_pixels.numpy() * 0.5 + 0.5) * 256.0 
+            end_pixels = (end_pixels.numpy() * 0.5 + 0.5) * 256.0 
+            
+            start_pixels = (start_pixels[0].astype(int), (start_pixels[1]).astype(int)) # 255 - 255 -  
+            end_pixels = (end_pixels[0].astype(int), (end_pixels[1]).astype(int))       # 255 - 255 - 
+    
+            if start_pixels == (128, 128) and end_pixels == (128, 128):
+                continue
+    
+            angle = angle_diff(yaw.item(), 0,  2*np.pi) + np.pi
+      
+            color = color_function(0, angle)  
+            cv2.line(image, start_pixels, end_pixels, color, thickness=2)
+
+    return image.astype('uint8')
+
 
 @torch.no_grad()
-def eval(model, val_dataloader):
+def eval(args, model, val_dataloader):
+
+    multiclass = args.multiclass
 
     model.eval()
 
@@ -280,7 +337,7 @@ def eval(model, val_dataloader):
     total_loss = 0
     wandb_images = []
 
-    indexes = [0, 260, 520, 895] #1500, 3200, 5000, 6000]
+    indexes = [0, 260, 520, 895] 
 
     for i, batch in enumerate(val_loader):
 
@@ -288,7 +345,7 @@ def eval(model, val_dataloader):
             break
 
         batch['features'] = batch['features'].cuda()
-        for tgt_type in ['VEHICLES', 'LANES']:
+        for tgt_type in ['VEHICLES', 'LANES', 'LANE_DIVIDERS']:
             for k in ['vector', 'mask']:  
                 batch['targets'][tgt_type][k] = batch['targets'][tgt_type][k].clone().cuda() 
 
@@ -308,10 +365,13 @@ def eval(model, val_dataloader):
             vehicle_pred_classes = out['vector']['VEHICLES']['mask'][0]
             vehicle_gts = batch['targets']['VEHICLES']['vector'][0]  
 
-            mask = torch.sigmoid(vehicle_pred_classes) > 0.3
-            # probs = torch.softmax(vehicle_pred_classes, dim=-1)
-            # pred_classes = torch.argmax(probs, dim=-1)
-            # mask = (pred_classes != 0)
+            if multiclass:
+                probs = torch.softmax(vehicle_pred_classes, dim=-1)
+                pred_classes = torch.argmax(probs, dim=-1)
+                mask = (pred_classes != 0)
+            else:
+                mask = torch.sigmoid(vehicle_pred_classes) > 0.3
+            
             vehicle_pred_vectors = vehicle_pred_vectors[mask]
             vehicles_pred_raster = visualize_vehicles(vehicle_pred_vectors)
             vehicles_gt_raster = visualize_vehicles(vehicle_gts)
@@ -330,11 +390,34 @@ def eval(model, val_dataloader):
 
             lanes_overlap = 0.8 * lanes_pred_raster + 0.2 * lanes_gt_raster
 
+
             images = [vehicles_gt_raster, vehicles_pred_raster, vehicles_overlap, lanes_gt_raster, lanes_pred_raster, lanes_overlap]
 
+            if 'LANE_DIVIDERS' in out['vector'].keys():
+                lane_divider_pred_vectors = out['vector']['LANE_DIVIDERS']['vector'][0]
+                lane_divider_pred_classes = out['vector']['LANE_DIVIDERS']['mask'][0]
+                lane_divider_gts = batch['targets']['LANE_DIVIDERS']['vector'][0]
+
+                mask = torch.sigmoid(lane_divider_pred_classes) > 0.9
+                lane_divider_pred_vectors = lane_divider_pred_vectors[mask]
+
+                lane_dividers_gt_raster = visualize_lane_dividers(lane_gts, lane_divider_gts)
+                lane_dividers_pred_raster = visualize_lane_dividers(lane_pred_vectors, lane_divider_pred_vectors)
+
+                lane_dividers_overlap = 0.8 * lane_dividers_pred_raster + 0.2 * lane_dividers_gt_raster
+
+                images.append(lane_dividers_gt_raster)
+                images.append(lane_dividers_pred_raster)
+                images.append(lane_dividers_overlap)
+
+
             top_row = np.concatenate(images[:3], axis=1)
-            bottom_row = np.concatenate(images[3:], axis=1)
-            concat = np.concatenate([top_row, bottom_row], axis=0) 
+            bottom_row = np.concatenate(images[3:6], axis=1)
+            if len(images) == 9:
+                last_row = np.concatenate(images[6:], axis=1)
+                concat = np.concatenate([top_row, bottom_row, last_row], axis=0)
+            else:
+                concat = np.concatenate([top_row, bottom_row], axis=0) 
             
             wandb_images.append(wandb.Image(concat, caption=f"GT - Pred - Overlay"))
 

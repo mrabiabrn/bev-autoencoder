@@ -24,10 +24,13 @@ class RVAEHungarianMatching(nn.Module):
         pred_states = predictions[tgt_type]['vector']  # B, Q, D
         gt_states = targets[tgt_type]['vector']        # B, num_obj, D 
         pred_logits = predictions[tgt_type]['mask']    # B, Q
-        gt_mask = targets[tgt_type]['mask']            # B, num_obj
+        if tgt_type == 'VEHICLES' and self._config.multiclass:
+            gt_mask = targets[tgt_type]['class']           # B, num_obj, C
+        else:
+            gt_mask = targets[tgt_type]['mask']            # B, num_obj
         
 
-        if tgt_type == 'LANES':
+        if tgt_type in ['LANES', 'LANE_DIVIDERS']:
             l1_cost = _get_line_l1_cost(gt_states, pred_states, gt_mask)
             ce_weight, reconstruction_weight = self._config.line_ce_weight, self._config.line_reconstruction_weight
             ce_cost = _get_ce_cost(gt_mask, pred_logits)
@@ -37,7 +40,10 @@ class RVAEHungarianMatching(nn.Module):
             # gt_classes = targets[tgt_type]['class']
             # ce_cost = _get_ce_cost_multiclass(gt_classes, pred_logits)
 
-            ce_cost = _get_ce_cost(gt_mask, pred_logits)
+            if self._config.multiclass:
+                ce_cost = _get_ce_cost_multiclass(gt_mask, pred_logits)
+            else:
+                ce_cost = _get_ce_cost(gt_mask, pred_logits)
         
         cost = ce_weight * ce_cost + reconstruction_weight * l1_cost
         cost = cost.cpu()  # NOTE: This unfortunately is the runtime bottleneck
